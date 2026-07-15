@@ -4,13 +4,16 @@
 <meta charset="UTF-8">
 <!-- Seguridad: bloquea toda conexión externa salvo la carga opcional del modelo de IA.
      El video de la cámara NUNCA sale del dispositivo: todo se procesa localmente. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' https://cdn.jsdelivr.net; connect-src https://cdn.jsdelivr.net https://storage.googleapis.com https://tfhub.dev; style-src 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: mediastream:; worker-src blob:; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' https://cdn.jsdelivr.net; connect-src 'self' https://cdn.jsdelivr.net https://storage.googleapis.com https://tfhub.dev; style-src 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob: mediastream:; worker-src 'self' blob:; manifest-src 'self'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PANOPTICORE">
 <meta name="theme-color" content="#000000">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" href="icon-512.png">
 <title>PANOPTICORE // EXPERIMENTAL SENSOR SUITE</title>
 <style>
   :root{
@@ -235,6 +238,11 @@ ON</button>
 
 const $ = id => document.getElementById(id);
 const GREEN="#00ff6e", AMBER="#ffb428", RED="#ff3232", CYAN="#28dcff", WHITE="#e6ffeb";
+
+// App instalable: cache local para funcionar sin conexión (solo en HTTPS)
+if("serviceWorker" in navigator && location.protocol==="https:"){
+  navigator.serviceWorker.register("./sw.js").catch(()=>{});
+}
 
 const state = {
   running:false, facing:"environment", mirror:false,
