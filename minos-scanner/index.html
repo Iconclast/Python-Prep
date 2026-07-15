@@ -1,0 +1,902 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="MINOS SIGINT">
+<meta name="theme-color" content="#000000">
+<title>MINOS SIGINT // ADVANCED TARGET LOCK</title>
+<style>
+  :root{
+    --green:#00ff6e; --amber:#ffb428; --red:#ff3232; --cyan:#28dcff; --white:#e6ffeb;
+    --panel:rgba(0,20,8,.82); --dim:rgba(0,255,110,.35);
+  }
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{width:100%;height:100%;overflow:hidden;background:#000;
+    font-family:"SF Mono","Menlo","Courier New",monospace;color:var(--green);
+    -webkit-user-select:none;user-select:none;touch-action:manipulation;}
+  #stage{position:fixed;inset:0;overflow:hidden;background:#000;}
+  #cam{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;}
+  #fxcanvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;
+    image-rendering:pixelated;display:none;}
+  #hud{position:absolute;inset:0;width:100%;height:100%;}
+  #scanlines{position:absolute;inset:0;pointer-events:none;display:none;
+    background:repeating-linear-gradient(0deg,rgba(0,0,0,0) 0px,rgba(0,0,0,0) 2px,rgba(0,255,110,.05) 3px,rgba(0,0,0,.18) 4px);}
+  #vignette{position:absolute;inset:0;pointer-events:none;
+    background:radial-gradient(ellipse at center,rgba(0,0,0,0) 60%,rgba(0,0,0,.5) 100%);}
+
+  /* top status bar */
+  #topbar{position:absolute;top:0;left:0;right:0;padding:calc(env(safe-area-inset-top) + 4px) 8px 4px 8px;
+    background:linear-gradient(180deg,rgba(0,10,4,.92),rgba(0,10,4,.55) 80%,transparent);
+    font-size:10px;letter-spacing:.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    text-shadow:0 0 6px rgba(0,255,110,.7);z-index:20;}
+
+  /* bottom controls */
+  #controls{position:absolute;left:0;right:0;bottom:0;z-index:30;
+    padding:6px 6px calc(env(safe-area-inset-bottom) + 6px) 6px;
+    background:linear-gradient(0deg,rgba(0,10,4,.94),rgba(0,10,4,.75) 70%,transparent);}
+  #btngrid{display:grid;grid-template-columns:repeat(6,1fr);gap:5px;}
+  button.ctl{appearance:none;background:rgba(0,40,16,.75);border:1px solid var(--dim);
+    color:var(--green);font-family:inherit;font-size:9px;line-height:1.25;letter-spacing:.5px;
+    padding:7px 2px;border-radius:2px;text-shadow:0 0 5px rgba(0,255,110,.6);white-space:pre-line;}
+  button.ctl:active{background:rgba(0,255,110,.25);}
+  button.ctl.on{border-color:var(--green);background:rgba(0,255,110,.18);box-shadow:0 0 8px rgba(0,255,110,.35) inset;}
+  button.ctl.warn{color:var(--amber);border-color:rgba(255,180,40,.5);}
+  button.ctl.danger{color:var(--red);border-color:rgba(255,50,50,.5);}
+
+  /* sliders */
+  #sliders{display:none;margin-top:6px;max-height:34vh;overflow-y:auto;}
+  #sliders.open{display:block;}
+  .sl{margin:4px 0;}
+  .sl label{display:block;font-size:9px;letter-spacing:.5px;color:var(--white);opacity:.9;margin-bottom:2px;}
+  .sl input[type=range]{width:100%;height:22px;appearance:none;background:transparent;}
+  .sl input[type=range]::-webkit-slider-runnable-track{height:3px;background:var(--dim);}
+  .sl input[type=range]::-webkit-slider-thumb{appearance:none;width:18px;height:18px;margin-top:-8px;
+    background:#02150a;border:1px solid var(--green);border-radius:2px;box-shadow:0 0 6px rgba(0,255,110,.6);}
+
+  /* inspector */
+  #inspector{position:absolute;right:8px;bottom:calc(env(safe-area-inset-bottom) + 116px);width:180px;z-index:25;
+    border:1px solid var(--green);background:var(--panel);box-shadow:0 0 12px rgba(0,255,110,.25);}
+  #inspector .title{font-size:9px;padding:3px 5px;border-bottom:1px solid var(--dim);
+    color:var(--green);letter-spacing:1px;}
+  #inspcanvas{width:100%;height:118px;display:block;background:#010f06;}
+  #inspfoot{font-size:8px;padding:3px 5px;line-height:1.5;color:var(--white);border-top:1px solid var(--dim);min-height:40px;}
+
+  /* radar */
+  #radarwrap{position:absolute;left:8px;bottom:calc(env(safe-area-inset-bottom) + 116px);z-index:25;display:block;}
+  #radar{display:block;background:rgba(0,15,6,.8);border:1px solid var(--dim);border-radius:50%;}
+  #radarlabel{font-size:8px;text-align:center;margin-top:2px;letter-spacing:1px;color:var(--white);opacity:.85;}
+
+  /* auto-track thumbnail strip */
+  #thumbs{position:absolute;top:0;left:0;right:0;z-index:15;display:flex;gap:6px;justify-content:center;
+    padding-top:calc(env(safe-area-inset-top) + 22px);pointer-events:none;}
+  .thumb{border:1px solid var(--green);background:rgba(0,15,6,.65);box-shadow:0 0 10px rgba(0,255,110,.3);display:none;}
+  .thumb canvas{display:block;width:86px;height:64px;}
+  .thumb .tl{font-size:7px;padding:1px 3px;letter-spacing:.5px;background:rgba(0,20,8,.9);
+    border-top:1px solid var(--dim);color:var(--green);white-space:nowrap;}
+
+  /* report panel */
+  #report{position:absolute;inset:0;z-index:40;display:none;background:rgba(0,8,3,.93);
+    padding:calc(env(safe-area-inset-top) + 12px) 12px calc(env(safe-area-inset-bottom) + 12px) 12px;}
+  #report.open{display:flex;flex-direction:column;}
+  #reporthead{display:flex;justify-content:space-between;align-items:center;border:1px solid var(--green);
+    padding:6px 8px;background:rgba(0,30,12,.6);}
+  #reporthead .t{font-size:10px;letter-spacing:1px;text-shadow:0 0 8px rgba(0,255,110,.8);}
+  #reportclose{background:rgba(0,60,24,.8);border:1px solid var(--green);color:var(--green);
+    font-family:inherit;font-size:9px;padding:4px 12px;letter-spacing:1px;}
+  #reportbody{flex:1;overflow-y:auto;font-size:9px;line-height:1.65;white-space:pre-wrap;
+    border:1px solid var(--dim);border-top:none;padding:8px;color:var(--green);
+    text-shadow:0 0 4px rgba(0,255,110,.45);}
+  #reportbody .amber{color:var(--amber);}
+  #reportbody .cyan{color:var(--cyan);}
+
+  /* boot / start screen */
+  #boot{position:absolute;inset:0;z-index:100;background:#000;display:flex;flex-direction:column;
+    justify-content:center;align-items:center;padding:24px;text-align:left;}
+  #boottext{font-size:11px;line-height:1.8;white-space:pre-wrap;max-width:340px;width:100%;
+    text-shadow:0 0 6px rgba(0,255,110,.6);}
+  #bootbtn{margin-top:28px;background:rgba(0,50,20,.6);border:1px solid var(--green);color:var(--green);
+    font-family:inherit;font-size:13px;letter-spacing:2px;padding:14px 26px;
+    box-shadow:0 0 16px rgba(0,255,110,.35);animation:pulse 1.4s infinite;}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
+  #booterr{margin-top:14px;color:var(--red);font-size:10px;white-space:pre-wrap;max-width:340px;}
+</style>
+</head>
+<body>
+<div id="stage">
+  <video id="cam" autoplay muted playsinline></video>
+  <canvas id="fxcanvas"></canvas>
+  <canvas id="hud"></canvas>
+  <div id="scanlines"></div>
+  <div id="vignette"></div>
+
+  <div id="topbar">MINOS SIGINT // ADV LOCK | points:0 | lock:OFF | conf:0.00 | tag:UNSCANNED</div>
+
+  <div id="thumbs">
+    <div class="thumb" id="th0"><canvas width="96" height="72"></canvas><div class="tl">AUTO OBJ TRACK-01</div></div>
+    <div class="thumb" id="th1"><canvas width="96" height="72"></canvas><div class="tl">AUTO OBJ TRACK-02</div></div>
+    <div class="thumb" id="th2"><canvas width="96" height="72"></canvas><div class="tl">AUTO OBJ TRACK-03</div></div>
+  </div>
+
+  <div id="radarwrap">
+    <canvas id="radar" width="116" height="116"></canvas>
+    <div id="radarlabel">RADAR · BLIPS 0 · SIG 0.00</div>
+  </div>
+
+  <div id="inspector">
+    <div class="title">ADV LOCK VIEWER</div>
+    <canvas id="inspcanvas" width="176" height="118"></canvas>
+    <div id="inspfoot">AIM + CAPTURE</div>
+  </div>
+
+  <div id="controls">
+    <div id="btngrid">
+      <button class="ctl warn" id="bCapture">CAPTURE
+RETICLE</button>
+      <button class="ctl danger" id="bUnlock">UNLOCK
+TARGET</button>
+      <button class="ctl" id="bSnap">SNAP
+YOLO</button>
+      <button class="ctl on" id="bFlow">FLOW
+ON</button>
+      <button class="ctl" id="bMode">MODE
+NORMAL</button>
+      <button class="ctl on" id="bRadar">RADAR
+ON</button>
+      <button class="ctl" id="bUfo">UFO SCAN</button>
+      <button class="ctl" id="bScan">SCAN LINES</button>
+      <button class="ctl" id="bMirror">MIRROR OFF</button>
+      <button class="ctl" id="bReport">TRACK
+REPORT</button>
+      <button class="ctl" id="bFlip">FLIP
+CAM</button>
+      <button class="ctl" id="bSliders">SLIDERS
+SHOW</button>
+    </div>
+    <div id="sliders">
+      <div class="sl"><label id="lZoom">CAMERA ZOOM: 1.0x</label>
+        <input type="range" id="sZoom" min="1" max="4" step="0.1" value="1"></div>
+      <div class="sl"><label id="lSens">SENS / THRESHOLD: 28</label>
+        <input type="range" id="sSens" min="8" max="80" step="1" value="28"></div>
+      <div class="sl"><label id="lArea">MIN MOTION AREA: 12px</label>
+        <input type="range" id="sArea" min="2" max="120" step="1" value="12"></div>
+      <div class="sl"><label id="lMax">MAX POINTS: 12</label>
+        <input type="range" id="sMax" min="1" max="24" step="1" value="12"></div>
+      <div class="sl"><label id="lRet">RETICLE CAPTURE RADIUS: 90px</label>
+        <input type="range" id="sRet" min="30" max="240" step="5" value="90"></div>
+      <div class="sl"><label id="lLock">LOCK SEARCH RADIUS: 110px</label>
+        <input type="range" id="sLock" min="30" max="300" step="5" value="110"></div>
+    </div>
+  </div>
+
+  <div id="report">
+    <div id="reporthead">
+      <span class="t">MINOS V7 // GENERATED UNIQUE-TRACK REPORT</span>
+      <button id="reportclose">CLOSE</button>
+    </div>
+    <div id="reportbody"></div>
+  </div>
+
+  <div id="boot">
+    <div id="boottext"></div>
+    <button id="bootbtn" style="display:none">▸ INITIALIZE SENSOR</button>
+    <div id="booterr"></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* ============================================================
+   MINOS SIGINT // ADVANCED TARGET LOCK  —  iPhone web edition
+   Port inspired by Kruix-art/MINOS---SIGINT-UFO-Scanner
+   Motion detection + alpha-beta (Kalman-style) tracking +
+   target memory + one-shot neural snap-tagging (COCO-SSD).
+   ============================================================ */
+
+const $ = id => document.getElementById(id);
+const GREEN="#00ff6e", AMBER="#ffb428", RED="#ff3232", CYAN="#28dcff", WHITE="#e6ffeb";
+
+const state = {
+  running:false, facing:"environment", mirror:false,
+  mode:0, modes:["NORMAL","EDGE","THERMAL","DITHER"],
+  flow:true, radar:true, ufo:false, scanlines:false,
+  zoom:1, sens:28, minArea:12, maxPoints:12, retRadius:90, lockRadius:110,
+  statusMsg:"RETICLE READY", statusCol:GREEN, statusUntil:0,
+  yolo:"IDLE", yoloModel:null, yoloTag:"UNSCANNED", yoloConf:0,
+  lockId:null, memory:null, // {x,y,vx,vy,area,since,conf}
+  frames:0, motionSamples:0, startTime:performance.now(),
+  gps:null, gpsAsked:false,
+  sweep:0,
+};
+
+const trackers = [];   // {id,x,y,vx,vy,area,age,miss,seen,label,conf,trail:[]}
+let nextTrackId = 1;
+const trackLog = [];   // report ring buffer
+function logEvent(txt, cls){
+  const t = new Date();
+  const hh = String(t.getHours()).padStart(2,"0"), mm=String(t.getMinutes()).padStart(2,"0"), ss=String(t.getSeconds()).padStart(2,"0");
+  trackLog.push({t:`${hh}:${mm}:${ss}`, txt, cls:cls||""});
+  if(trackLog.length>220) trackLog.shift();
+}
+
+/* ---------- boot sequence ---------- */
+const bootLines = [
+"MINOS SIGINT // ADVANCED TARGET LOCK",
+"build V7.2 · web sensor port",
+"",
+"[ OK ] loading kernel modules .......... done",
+"[ OK ] kalman filter core .............. armed",
+"[ OK ] optical flow recovery ........... armed",
+"[ OK ] micro-motion detector ........... armed",
+"[ OK ] target memory system ............ armed",
+"[ -- ] neural snap-tagger .............. on demand",
+"",
+"RETICLE CAPTURE -> YOLO SNAP ONCE ->",
+"KALMAN + FLOW + MOTION MEMORY TRACK",
+"",
+"awaiting operator authorization for optical sensor",
+];
+(function typeBoot(){
+  const el = $("boottext"); let i=0;
+  const iv = setInterval(()=>{
+    el.textContent = bootLines.slice(0,++i).join("\n");
+    if(i>=bootLines.length){ clearInterval(iv); $("bootbtn").style.display="block"; }
+  }, 90);
+})();
+
+/* ---------- camera ---------- */
+const video = $("cam");
+let stream = null;
+
+async function startCamera(){
+  if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
+  const constraints = { audio:false, video:{
+    facingMode: state.facing,
+    width:{ideal:1280}, height:{ideal:720},
+  }};
+  stream = await navigator.mediaDevices.getUserMedia(constraints);
+  video.srcObject = stream;
+  await video.play();
+}
+
+$("bootbtn").addEventListener("click", async ()=>{
+  $("booterr").textContent = "";
+  try{
+    await startCamera();
+    $("boot").style.display = "none";
+    state.running = true;
+    state.startTime = performance.now();
+    logEvent("SENSOR ONLINE · OPTICAL FEED ACQUIRED","cyan");
+    requestAnimationFrame(loop);
+  }catch(e){
+    $("booterr").textContent =
+      "SENSOR FAULT: " + (e && e.message ? e.message : e) +
+      "\n\n· requiere HTTPS y permiso de cámara" +
+      "\n· Ajustes > Safari > Cámara > Permitir";
+  }
+});
+
+/* ---------- canvases ---------- */
+const hud = $("hud"), hctx = hud.getContext("2d");
+const fx = $("fxcanvas"), fctx = fx.getContext("2d");
+const proc = document.createElement("canvas"), pctx = proc.getContext("2d",{willReadFrequently:true});
+const insp = $("inspcanvas"), ictx = insp.getContext("2d");
+const radar = $("radar"), rctx = radar.getContext("2d");
+const thumbCv = [ $("th0"), $("th1"), $("th2") ].map(d=>({box:d, ctx:d.querySelector("canvas").getContext("2d"), label:d.querySelector(".tl")}));
+
+let W=0,H=0,DPR=1;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  hud.width = W*DPR; hud.height = H*DPR;
+  hud.style.width=W+"px"; hud.style.height=H+"px";
+  hctx.setTransform(DPR,0,0,DPR,0,0);
+}
+window.addEventListener("resize", resize); resize();
+
+/* ---------- geometry: video(cover+zoom+mirror) -> screen ---------- */
+function coverMap(){
+  const vw = video.videoWidth||1280, vh = video.videoHeight||720;
+  const scale = Math.max(W/vw, H/vh) * state.zoom;
+  const dw = vw*scale, dh = vh*scale;
+  return { vw, vh, scale, ox:(W-dw)/2, oy:(H-dh)/2 };
+}
+function vidToScreen(x, y, m){
+  let sx = m.ox + x*m.scale, sy = m.oy + y*m.scale;
+  if(state.mirror) sx = W - sx;
+  return [sx, sy];
+}
+
+/* ---------- motion detection ---------- */
+const PW = 120; let PH = 90;
+let prevGray = null;
+const CELL = 4; // cells of 4x4 px in proc space
+function detectMotion(){
+  const m = coverMap();
+  PH = Math.max(60, Math.round(PW * H / W));
+  if(proc.width!==PW || proc.height!==PH){ proc.width=PW; proc.height=PH; prevGray=null; }
+  // draw the visible (cover-cropped + zoomed) region into proc
+  const visW = W/m.scale, visH = H/m.scale;
+  const srcX = (m.vw - visW)/2, srcY = (m.vh - visH)/2;
+  try{ pctx.drawImage(video, srcX, srcY, visW, visH, 0, 0, PW, PH); }
+  catch(e){ return []; }
+  let img;
+  try{ img = pctx.getImageData(0,0,PW,PH); }catch(e){ return []; }
+  const d = img.data, n = PW*PH;
+  const gray = new Uint8ClampedArray(n);
+  for(let i=0;i<n;i++){ const j=i*4; gray[i]=(d[j]*3 + d[j+1]*6 + d[j+2])/10; }
+  if(!prevGray){ prevGray=gray; return []; }
+  const thr = state.ufo ? Math.max(6, state.sens*0.55) : state.sens;
+  const cw = Math.ceil(PW/CELL), ch = Math.ceil(PH/CELL);
+  const cells = new Uint16Array(cw*ch);
+  let total=0;
+  for(let y=0;y<PH;y++){
+    for(let x=0;x<PW;x++){
+      const i=y*PW+x;
+      if(Math.abs(gray[i]-prevGray[i])>thr){
+        cells[((y/CELL)|0)*cw + ((x/CELL)|0)]++;
+        total++;
+      }
+    }
+  }
+  prevGray = gray;
+  state.motionSamples += total;
+  // connected components over active cells
+  const active = new Uint8Array(cw*ch);
+  const minCell = state.ufo ? 1 : 2;
+  for(let i=0;i<cw*ch;i++) active[i] = cells[i]>=minCell ? 1:0;
+  const seen = new Uint8Array(cw*ch);
+  const boxes = [];
+  const stack = [];
+  for(let cy=0;cy<ch;cy++) for(let cx=0;cx<cw;cx++){
+    const idx=cy*cw+cx;
+    if(!active[idx]||seen[idx]) continue;
+    let minx=cx,maxx=cx,miny=cy,maxy=cy,mass=0;
+    stack.length=0; stack.push(idx); seen[idx]=1;
+    while(stack.length){
+      const c=stack.pop(); const x=c%cw, y=(c/cw)|0;
+      mass += cells[c];
+      if(x<minx)minx=x; if(x>maxx)maxx=x; if(y<miny)miny=y; if(y>maxy)maxy=y;
+      for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
+        const nx=x+dx, ny=y+dy;
+        if(nx<0||ny<0||nx>=cw||ny>=ch) continue;
+        const ni=ny*cw+nx;
+        if(active[ni]&&!seen[ni]){ seen[ni]=1; stack.push(ni); }
+      }
+    }
+    if(mass < state.minArea) continue;
+    // convert cell box -> screen coords
+    const px2s = W/PW; // proc pixel to screen (proc mirrors visible region aspect)
+    const bx = minx*CELL*px2s, by = miny*CELL*(H/PH);
+    const bw = (maxx-minx+1)*CELL*px2s, bh=(maxy-miny+1)*CELL*(H/PH);
+    boxes.push({ x: state.mirror ? W-(bx+bw/2) : bx+bw/2, y: by+bh/2, w:bw, h:bh, area:mass });
+  }
+  boxes.sort((a,b)=>b.area-a.area);
+  return boxes.slice(0, state.maxPoints+4);
+}
+
+/* ---------- tracking (alpha-beta / kalman-style) ---------- */
+function updateTrackers(boxes){
+  const now = performance.now();
+  for(const t of trackers){ t.x+=t.vx; t.y+=t.vy; t.matched=false; }
+  for(const b of boxes){
+    let best=null, bd=1e9;
+    for(const t of trackers){
+      if(t.matched) continue;
+      const dd=(t.x-b.x)**2+(t.y-b.y)**2;
+      if(dd<bd){ bd=dd; best=t; }
+    }
+    const R = (best && best.id===state.lockId) ? state.lockRadius : 80;
+    if(best && bd < R*R){
+      const a=0.45, g=0.12;
+      const rx=b.x-best.x, ry=b.y-best.y;
+      best.x+=a*rx; best.y+=a*ry; best.vx+=g*rx; best.vy+=g*ry;
+      best.vx*=0.92; best.vy*=0.92;
+      best.area=b.area; best.w=b.w; best.h=b.h;
+      best.age++; best.miss=0; best.matched=true; best.seen=now;
+      best.trail.push([best.x,best.y]); if(best.trail.length>18) best.trail.shift();
+    } else if(trackers.length < state.maxPoints){
+      trackers.push({id:nextTrackId++, x:b.x,y:b.y,vx:0,vy:0,w:b.w,h:b.h,area:b.area,
+        age:1,miss:0,matched:true,seen:now,label:null,conf:0,trail:[[b.x,b.y]]});
+    }
+  }
+  for(let i=trackers.length-1;i>=0;i--){
+    const t=trackers[i];
+    if(!t.matched) t.miss++;
+    const limit = t.id===state.lockId ? 45 : 14;
+    if(t.miss>limit || t.x<-80||t.x>W+80||t.y<-80||t.y>H+80){
+      if(t.id===state.lockId){
+        state.memory = {x:t.x,y:t.y,vx:t.vx,vy:t.vy,area:t.area,since:performance.now(),conf:0.8,label:t.label};
+        state.lockId=null;
+        setStatus(`TARGET MEMORY / SEARCHING 0s CONF 0.80`, AMBER);
+        logEvent(`TRK-${String(t.id).padStart(3,"0")} SIGNAL LOST · MEMORY HOLD X${t.x|0} Y${t.y|0}`,"amber");
+      }
+      if(t.age>20) logEvent(`TRK-${String(t.id).padStart(3,"0")} track end · life ${t.age}f · a${t.area}`);
+      trackers.splice(i,1);
+    }
+  }
+  // memory re-acquire
+  if(state.memory){
+    const mem=state.memory;
+    mem.x+=mem.vx*0.5; mem.y+=mem.vy*0.5;
+    const ageS=(performance.now()-mem.since)/1000;
+    mem.conf=Math.max(0, 0.8 - ageS*0.13);
+    let best=null,bd=1e9;
+    for(const t of trackers){
+      const dd=(t.x-mem.x)**2+(t.y-mem.y)**2;
+      if(dd<bd){bd=dd;best=t;}
+    }
+    if(best && bd < state.lockRadius*state.lockRadius){
+      state.lockId=best.id; best.label=mem.label||best.label;
+      state.memory=null;
+      setStatus(`ADV LOCK REACQ X${best.x|0} Y${best.y|0} CONF ${(0.6+Math.random()*0.3).toFixed(2)}`, GREEN);
+      logEvent(`TRK-${String(best.id).padStart(3,"0")} REACQUIRED FROM MEMORY`,"cyan");
+    } else if(ageS>6){
+      state.memory=null;
+      setStatus("TARGET LOST - RETICLE READY", RED);
+      logEvent("MEMORY EXPIRED · TARGET LOST","amber");
+    } else {
+      setStatus(`TARGET MEMORY / SEARCHING ${ageS.toFixed(0)}s CONF ${mem.conf.toFixed(2)}`, AMBER);
+    }
+  }
+}
+
+/* ---------- status ---------- */
+function setStatus(msg,col){ state.statusMsg=msg; state.statusCol=col||GREEN; state.statusUntil=performance.now()+2500; }
+
+/* ---------- lock controls ---------- */
+$("bCapture").addEventListener("click", ()=>{
+  const cx=W/2, cy=H/2; let best=null,bd=1e9;
+  for(const t of trackers){
+    const dd=(t.x-cx)**2+(t.y-cy)**2;
+    if(dd<bd){bd=dd;best=t;}
+  }
+  if(best && bd < state.retRadius*state.retRadius){
+    state.lockId=best.id; state.memory=null;
+    setStatus(`LOCKED FROM RETICLE X${best.x|0} Y${best.y|0} A${best.area}`, GREEN);
+    logEvent(`TRK-${String(best.id).padStart(3,"0")} RETICLE LOCK X${best.x|0} Y${best.y|0} A${best.area}`,"cyan");
+    if(navigator.vibrate) navigator.vibrate(30);
+  } else {
+    setStatus("CAPTURE ARMED: NO MOTION IN RETICLE", AMBER);
+  }
+});
+$("bUnlock").addEventListener("click", ()=>{
+  state.lockId=null; state.memory=null;
+  state.yoloTag="UNSCANNED"; state.yoloConf=0;
+  setStatus("TARGET LOST - RETICLE READY", RED);
+  logEvent("OPERATOR UNLOCK · TRACK RELEASED");
+});
+
+/* ---------- neural snap tagging (one-shot, like YOLO SNAP) ---------- */
+async function loadModel(){
+  if(state.yoloModel) return state.yoloModel;
+  state.yolo="LOADING"; setStatus("YOLO: LOADING", CYAN);
+  const load = src => new Promise((res,rej)=>{
+    const s=document.createElement("script"); s.src=src; s.onload=res; s.onerror=rej;
+    document.head.appendChild(s);
+  });
+  try{
+    await load("https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js");
+    await load("https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js");
+    state.yoloModel = await cocoSsd.load({base:"lite_mobilenet_v2"});
+    state.yolo="READY"; setStatus("YOLO: READY / SNAP ONLY", GREEN);
+    return state.yoloModel;
+  }catch(e){
+    state.yolo="MISSING"; setStatus("YOLO: MODEL MISSING", RED);
+    logEvent("NEURAL TAGGER UNAVAILABLE · OFFLINE MODE","amber");
+    return null;
+  }
+}
+let snapBusy=false;
+$("bSnap").addEventListener("click", async ()=>{
+  if(snapBusy) return; snapBusy=true;
+  $("bSnap").classList.add("on");
+  setStatus("YOLO: SNAP QUEUED", CYAN);
+  const model = await loadModel();
+  if(model){
+    try{
+      const preds = await model.detect(video, 8, 0.35);
+      const m = coverMap();
+      const target = trackers.find(t=>t.id===state.lockId);
+      const refX = target?target.x:W/2, refY=target?target.y:H/2;
+      let best=null,bd=1e9;
+      for(const p of preds){
+        const [px,py] = vidToScreen(p.bbox[0]+p.bbox[2]/2, p.bbox[1]+p.bbox[3]/2, m);
+        const dd=(px-refX)**2+(py-refY)**2;
+        if(dd<bd){bd=dd;best=p;}
+      }
+      if(best){
+        state.yoloTag = best.class.toUpperCase();
+        state.yoloConf = best.score;
+        if(target){ target.label=state.yoloTag; target.conf=best.score; }
+        setStatus(`YOLO SNAP TAGGED: ${state.yoloTag} ${best.score.toFixed(2)}`, GREEN);
+        logEvent(`SNAP TAG: ${state.yoloTag} ${best.score.toFixed(2)} · ${preds.length} detections in frame`,"cyan");
+      } else {
+        state.yoloTag="UNKNOWN"; state.yoloConf=0;
+        setStatus("YOLO SNAP: UNKNOWN / IDLE", AMBER);
+        logEvent("SNAP RETURNED 0 DETECTIONS");
+      }
+    }catch(e){
+      setStatus("YOLO: OFF / SNAP SKIPPED", RED);
+    }
+  }
+  $("bSnap").classList.remove("on");
+  snapBusy=false;
+});
+
+/* ---------- toggles ---------- */
+function toggleBtn(btn,on){ btn.classList.toggle("on",on); }
+$("bFlow").addEventListener("click", e=>{
+  state.flow=!state.flow;
+  e.target.textContent = state.flow?"FLOW\nON":"FLOW\nOFF";
+  toggleBtn(e.target,state.flow);
+});
+$("bMode").addEventListener("click", e=>{
+  state.mode=(state.mode+1)%state.modes.length;
+  e.target.textContent="MODE\n"+state.modes[state.mode];
+  toggleBtn(e.target,state.mode!==0);
+  fx.style.display = state.mode!==0 ? "block":"none";
+  video.style.visibility = state.mode!==0 ? "hidden":"visible";
+});
+$("bRadar").addEventListener("click", e=>{
+  state.radar=!state.radar;
+  e.target.textContent=state.radar?"RADAR\nON":"RADAR\nOFF";
+  toggleBtn(e.target,state.radar);
+  $("radarwrap").style.display=state.radar?"block":"none";
+});
+$("bUfo").addEventListener("click", e=>{
+  state.ufo=!state.ufo;
+  e.target.textContent=state.ufo?"UFO OFF":"UFO SCAN";
+  toggleBtn(e.target,state.ufo);
+  setStatus(state.ufo?"UFO SCAN: HI-SENS SKY MODE":"UFO SCAN: OFF", state.ufo?CYAN:GREEN);
+  logEvent(state.ufo?"UFO SCAN ENGAGED · SENSITIVITY BOOST":"UFO SCAN DISENGAGED");
+});
+$("bScan").addEventListener("click", e=>{
+  state.scanlines=!state.scanlines;
+  toggleBtn(e.target,state.scanlines);
+  $("scanlines").style.display=state.scanlines?"block":"none";
+});
+$("bMirror").addEventListener("click", e=>{
+  state.mirror=!state.mirror;
+  e.target.textContent=state.mirror?"MIRROR ON":"MIRROR OFF";
+  toggleBtn(e.target,state.mirror);
+  video.style.transform=state.mirror?"scaleX(-1) scale("+state.zoom+")":"scale("+state.zoom+")";
+});
+$("bFlip").addEventListener("click", async ()=>{
+  state.facing = state.facing==="environment"?"user":"environment";
+  try{ await startCamera(); prevGray=null; trackers.length=0; state.lockId=null; }
+  catch(e){ setStatus("CAM SWITCH FAILED", RED); }
+});
+$("bSliders").addEventListener("click", e=>{
+  const open=$("sliders").classList.toggle("open");
+  e.target.textContent=open?"SLIDERS\nHIDE":"SLIDERS\nSHOW";
+  toggleBtn(e.target,open);
+});
+$("bReport").addEventListener("click", ()=>{ openReport(); });
+$("reportclose").addEventListener("click", ()=>{ $("report").classList.remove("open"); });
+
+/* ---------- sliders ---------- */
+function bindSlider(id, labelId, fmt, apply){
+  $(id).addEventListener("input", e=>{
+    const v=parseFloat(e.target.value);
+    $(labelId).textContent=fmt(v);
+    apply(v);
+  });
+}
+bindSlider("sZoom","lZoom",v=>`CAMERA ZOOM: ${v.toFixed(1)}x`,v=>{
+  state.zoom=v;
+  video.style.transform=(state.mirror?"scaleX(-1) ":"")+"scale("+v+")";
+  prevGray=null;
+});
+bindSlider("sSens","lSens",v=>`SENS / THRESHOLD: ${v}`,v=>state.sens=v);
+bindSlider("sArea","lArea",v=>`MIN MOTION AREA: ${v}px`,v=>state.minArea=v);
+bindSlider("sMax","lMax",v=>`MAX POINTS: ${v}`,v=>state.maxPoints=v);
+bindSlider("sRet","lRet",v=>`RETICLE CAPTURE RADIUS: ${v}px`,v=>state.retRadius=v);
+bindSlider("sLock","lLock",v=>`LOCK SEARCH RADIUS: ${v}px`,v=>state.lockRadius=v);
+
+/* ---------- report ---------- */
+function openReport(){
+  if(!state.gpsAsked && navigator.geolocation){
+    state.gpsAsked=true;
+    navigator.geolocation.getCurrentPosition(
+      p=>{ state.gps=[p.coords.latitude,p.coords.longitude]; renderReport(); },
+      ()=>{ state.gps=null; renderReport(); }, {timeout:4000});
+  }
+  renderReport();
+  $("report").classList.add("open");
+}
+function renderReport(){
+  const up=((performance.now()-state.startTime)/1000)|0;
+  const locked=trackers.find(t=>t.id===state.lockId);
+  const gps=state.gps?`GPS: ${state.gps[0].toFixed(5)}, ${state.gps[1].toFixed(5)}`:"GPS: NO FIX";
+  const head=[
+    "OP REPORT  GENERATED "+new Date().toISOString().replace("T"," ").slice(0,19),
+    "PANOPTICORE-CLASS OPERATION SURVEILLANCE REPORT",
+    "────────────────────────────────────────",
+    `DURATION: ${up}s`,
+    `FRAME SAMPLES: ${state.frames}`,
+    `MOTION SAMPLES TOTAL: ${state.motionSamples}`,
+    `ACTIVE TRACKS: ${trackers.length}`,
+    `UNIQUE TRACKS ISSUED: ${nextTrackId-1}`,
+    `LOCK STATE: ${locked?("ENGAGED · TRK-"+String(locked.id).padStart(3,"0")):(state.memory?"MEMORY HOLD":"NONE")}`,
+    `SNAP TAG: ${state.yoloTag}${state.yoloConf?(" "+state.yoloConf.toFixed(2)):""}`,
+    gps,
+    "────────────────────────────────────────",
+    "UNIQUE-TRACK EVENT LOG (latest first):",""
+  ].join("\n");
+  const lines=[...trackLog].reverse().map(l=>{
+    const cls=l.cls?` class="${l.cls}"`:"";
+    return `<span${cls}>${l.t}  ${l.txt.replace(/</g,"&lt;")}</span>`;
+  }).join("\n");
+  $("reportbody").innerHTML = head.replace(/</g,"&lt;") + "\n" + (lines||"— no events recorded —") +
+    "\n\n<span class='amber'>NOTE: RAW *OLD DETECTIONS count every sampled detection.\nUNIQUE TRACKS estimate distinct objects moving.</span>";
+}
+
+/* ---------- video FX modes ---------- */
+function renderFX(){
+  if(state.mode===0) return;
+  const fw=180, fh=Math.round(fw*H/W);
+  if(fx.width!==fw||fx.height!==fh){ fx.width=fw; fx.height=fh; }
+  const m=coverMap();
+  const visW=W/m.scale, visH=H/m.scale;
+  fctx.save();
+  if(state.mirror){ fctx.translate(fw,0); fctx.scale(-1,1); }
+  try{ fctx.drawImage(video,(m.vw-visW)/2,(m.vh-visH)/2,visW,visH,0,0,fw,fh); }catch(e){}
+  fctx.restore();
+  let img; try{ img=fctx.getImageData(0,0,fw,fh); }catch(e){ return; }
+  const d=img.data, mode=state.modes[state.mode];
+  if(mode==="EDGE"){
+    const out=new Uint8ClampedArray(d.length);
+    for(let y=1;y<fh-1;y++)for(let x=1;x<fw-1;x++){
+      const i=(y*fw+x)*4;
+      const gx=d[i+4]-d[i-4], gy=d[i+fw*4]-d[i-fw*4];
+      const e=Math.min(255,Math.abs(gx)+Math.abs(gy));
+      out[i]=0; out[i+1]=e; out[i+2]=e*0.45; out[i+3]=255;
+    }
+    img.data.set(out);
+  } else if(mode==="THERMAL"){
+    for(let i=0;i<d.length;i+=4){
+      const v=(d[i]+d[i+1]+d[i+2])/3;
+      d[i]  = v<128 ? 0 : (v-128)*2;
+      d[i+1]= v<64 ? 0 : v<192 ? (v-64)*2 : 255;
+      d[i+2]= v<64 ? v*4 : v<128 ? 255-(v-64)*4 : 0;
+    }
+  } else if(mode==="DITHER"){
+    const B=[[0,8,2,10],[12,4,14,6],[3,11,1,9],[15,7,13,5]];
+    for(let y=0;y<fh;y++)for(let x=0;x<fw;x++){
+      const i=(y*fw+x)*4;
+      const v=(d[i]+d[i+1]+d[i+2])/3;
+      const on=v > (B[y&3][x&3]+0.5)*16;
+      d[i]=0; d[i+1]=on?255:8; d[i+2]=on?110:4;
+    }
+  }
+  fctx.putImageData(img,0,0);
+}
+
+/* ---------- HUD drawing ---------- */
+function pad3(n){ return String(n).padStart(3,"0"); }
+function drawCorners(x,y,w,h,col,lw){
+  const L=Math.min(14, w*0.3);
+  hctx.strokeStyle=col; hctx.lineWidth=lw||1.5;
+  hctx.beginPath();
+  hctx.moveTo(x,y+L);hctx.lineTo(x,y);hctx.lineTo(x+L,y);
+  hctx.moveTo(x+w-L,y);hctx.lineTo(x+w,y);hctx.lineTo(x+w,y+L);
+  hctx.moveTo(x+w,y+h-L);hctx.lineTo(x+w,y+h);hctx.lineTo(x+w-L,y+h);
+  hctx.moveTo(x+L,y+h);hctx.lineTo(x,y+h);hctx.lineTo(x,y+h-L);
+  hctx.stroke();
+}
+function drawHUD(now){
+  hctx.clearRect(0,0,W,H);
+  hctx.font="9px Menlo, monospace";
+  const cx=W/2, cy=H/2;
+  const locked = trackers.find(t=>t.id===state.lockId);
+
+  // reticle
+  hctx.save();
+  hctx.strokeStyle = locked?GREEN:(state.memory?AMBER:"rgba(0,255,110,.7)");
+  hctx.lineWidth=1;
+  hctx.setLineDash(locked?[]:[5,5]);
+  hctx.beginPath(); hctx.arc(cx,cy,state.retRadius*0.4,0,7); hctx.stroke();
+  hctx.setLineDash([]);
+  hctx.beginPath();
+  hctx.moveTo(cx-state.retRadius*0.55,cy); hctx.lineTo(cx-state.retRadius*0.25,cy);
+  hctx.moveTo(cx+state.retRadius*0.25,cy); hctx.lineTo(cx+state.retRadius*0.55,cy);
+  hctx.moveTo(cx,cy-state.retRadius*0.55); hctx.lineTo(cx,cy-state.retRadius*0.25);
+  hctx.moveTo(cx,cy+state.retRadius*0.25); hctx.lineTo(cx,cy+state.retRadius*0.55);
+  hctx.stroke();
+  hctx.fillStyle="rgba(0,255,110,.8)";
+  hctx.fillText(locked?"TRACKING":"CAPTURE ARMED: CENTER RETICLE", cx+state.retRadius*0.45, cy-state.retRadius*0.45);
+  hctx.restore();
+
+  // trackers
+  for(const t of trackers){
+    const isLock = t.id===state.lockId;
+    const col = isLock?GREEN:(t.age<4?"rgba(0,255,110,.4)":"rgba(0,255,110,.85)");
+    const bw=Math.max(26,t.w), bh=Math.max(26,t.h);
+    drawCorners(t.x-bw/2, t.y-bh/2, bw, bh, col, isLock?2:1);
+    if(state.flow && t.trail.length>2){
+      hctx.strokeStyle="rgba(40,220,255,.5)"; hctx.lineWidth=1;
+      hctx.beginPath(); hctx.moveTo(t.trail[0][0],t.trail[0][1]);
+      for(const p of t.trail) hctx.lineTo(p[0],p[1]);
+      hctx.stroke();
+    }
+    hctx.fillStyle=col;
+    const tag = t.label ? `${t.label}` : (isLock? state.yoloTag : "UNSCANNED");
+    hctx.fillText(`TRK-${pad3(t.id)} ${tag}`, t.x-bw/2, t.y-bh/2-4);
+    hctx.fillStyle="rgba(230,255,235,.75)";
+    hctx.fillText(`v${Math.hypot(t.vx,t.vy).toFixed(1)} a${t.area}`, t.x-bw/2, t.y+bh/2+10);
+    if(isLock){
+      // connecting line to inspector
+      const ir = $("inspector").getBoundingClientRect();
+      hctx.strokeStyle="rgba(255,180,40,.6)"; hctx.lineWidth=1;
+      hctx.beginPath(); hctx.moveTo(t.x,t.y);
+      hctx.lineTo(ir.left+ir.width/2, ir.top); hctx.stroke();
+    }
+  }
+  // memory ghost
+  if(state.memory){
+    const mem=state.memory;
+    hctx.strokeStyle=AMBER; hctx.setLineDash([4,4]);
+    hctx.strokeRect(mem.x-20,mem.y-20,40,40);
+    hctx.setLineDash([]);
+    hctx.fillStyle=AMBER;
+    hctx.fillText("MEMORY", mem.x-20, mem.y-26);
+    hctx.beginPath(); hctx.arc(mem.x,mem.y,state.lockRadius,0,7);
+    hctx.strokeStyle="rgba(255,180,40,.25)"; hctx.stroke();
+  }
+
+  // left HUD text block
+  const up=((now-state.startTime)/1000);
+  const lines=[
+    `T+${up.toFixed(1)}s  FRM ${state.frames}`,
+    `PTS ${trackers.length}/${state.maxPoints}  MODE ${state.modes[state.mode]}`,
+    `SENS ${state.sens}  AREA ${state.minArea}px`,
+    state.ufo?"UFO SCAN: HI-SENS":"",
+    `YOLO: ${state.yolo==="IDLE"?"READY ON DEMAND":state.yolo}`,
+  ].filter(Boolean);
+  hctx.fillStyle="rgba(0,255,110,.75)";
+  let ly=Math.max(90, H*0.16);
+  for(const s of lines){ hctx.fillText(s, 10, ly); ly+=13; }
+
+  // status message
+  const showMsg = now<state.statusUntil ? state.statusMsg :
+    (locked?`ADV LOCK TRK X${locked.x|0} Y${locked.y|0} CONF ${(locked.conf||0.72).toFixed(2)}`:
+     state.memory?state.statusMsg:"RETICLE READY");
+  hctx.font="11px Menlo, monospace";
+  hctx.fillStyle = now<state.statusUntil ? state.statusCol : (locked?GREEN:"rgba(0,255,110,.85)");
+  hctx.shadowColor=hctx.fillStyle; hctx.shadowBlur=8;
+  hctx.fillText(showMsg, 10, H*0.16-24);
+  hctx.shadowBlur=0;
+
+  // top bar text
+  $("topbar").textContent =
+    `MINOS SIGINT // ADV LOCK | points:${trackers.length} | lock:${locked?"ON":"OFF"} | `+
+    `conf:${(locked?(locked.conf||0.72):0).toFixed(2)} | tag:${state.yoloTag}`;
+}
+
+/* ---------- inspector ---------- */
+function drawInspector(){
+  const locked=trackers.find(t=>t.id===state.lockId);
+  ictx.fillStyle="#010f06"; ictx.fillRect(0,0,insp.width,insp.height);
+  if(!locked){
+    ictx.strokeStyle="rgba(0,255,110,.35)";
+    ictx.strokeRect(60,35,56,48);
+    ictx.fillStyle="rgba(0,255,110,.6)"; ictx.font="9px Menlo, monospace";
+    ictx.fillText("AIM + CAPTURE",52,100);
+    $("inspfoot").textContent = state.memory ? "MEMORY HOLD · SEARCHING" : "AIM + CAPTURE";
+    return;
+  }
+  const m=coverMap();
+  // screen -> video coords
+  let sx=locked.x; if(state.mirror) sx=W-sx;
+  const vx=(sx-m.ox)/m.scale, vy=(locked.y-m.oy)/m.scale;
+  const crop=Math.max(60, Math.max(locked.w,locked.h)/m.scale*1.8);
+  try{
+    ictx.save();
+    if(state.mirror){ ictx.translate(insp.width,0); ictx.scale(-1,1); }
+    ictx.drawImage(video, vx-crop/2, vy-crop*insp.height/insp.width/2,
+      crop, crop*insp.height/insp.width, 0,0, insp.width, insp.height);
+    ictx.restore();
+  }catch(e){}
+  ictx.strokeStyle=GREEN; ictx.lineWidth=1;
+  ictx.strokeRect(insp.width/2-18,insp.height/2-18,36,36);
+  ictx.strokeStyle="rgba(0,255,110,.4)";
+  ictx.beginPath();
+  ictx.moveTo(insp.width/2,0);ictx.lineTo(insp.width/2,insp.height);
+  ictx.moveTo(0,insp.height/2);ictx.lineTo(insp.width,insp.height/2);
+  ictx.stroke();
+  $("inspfoot").innerHTML =
+    `X${locked.x|0} Y${locked.y|0} A${locked.area}px CONF ${(locked.conf||0.72).toFixed(2)}<br>`+
+    `TAG: ${locked.label||state.yoloTag}<br>`+
+    `YOLO: ${state.yolo==="IDLE"?"SNAP ON DEMAND":state.yolo}`;
+}
+
+/* ---------- radar ---------- */
+function drawRadar(now){
+  if(!state.radar) return;
+  const R=58, c=R;
+  rctx.clearRect(0,0,116,116);
+  rctx.strokeStyle="rgba(0,255,110,.5)";
+  for(const rr of [R-1,R*0.66,R*0.33]){
+    rctx.beginPath(); rctx.arc(c,c,rr,0,7); rctx.stroke();
+  }
+  rctx.beginPath(); rctx.moveTo(c,2); rctx.lineTo(c,114); rctx.moveTo(2,c); rctx.lineTo(114,c);
+  rctx.strokeStyle="rgba(0,255,110,.2)"; rctx.stroke();
+  // sweep
+  state.sweep = (now/900) % (Math.PI*2);
+  const grad = rctx.createConicGradient ? null : null;
+  rctx.save();
+  rctx.translate(c,c); rctx.rotate(state.sweep);
+  const g=rctx.createLinearGradient(0,0,R,0);
+  g.addColorStop(0,"rgba(0,255,110,.35)"); g.addColorStop(1,"rgba(0,255,110,0)");
+  rctx.fillStyle=g;
+  rctx.beginPath(); rctx.moveTo(0,0); rctx.arc(0,0,R-1,-0.5,0); rctx.closePath(); rctx.fill();
+  rctx.restore();
+  // blips
+  let sig=0;
+  for(const t of trackers){
+    const bx=c+(t.x/W-0.5)*2*R*0.9, by=c+(t.y/H-0.5)*2*R*0.9;
+    rctx.fillStyle = t.id===state.lockId?AMBER:GREEN;
+    rctx.beginPath(); rctx.arc(bx,by,t.id===state.lockId?3:2,0,7); rctx.fill();
+    sig+=t.area;
+  }
+  $("radarlabel").textContent=`RADAR · BLIPS ${trackers.length} · SIG ${Math.min(9.99,sig/400).toFixed(2)}`;
+}
+
+/* ---------- auto-track thumbnails ---------- */
+let lastThumb=0;
+function drawThumbs(now){
+  if(now-lastThumb<250) return;
+  lastThumb=now;
+  const m=coverMap();
+  const tops=[...trackers].sort((a,b)=>b.area-a.area).slice(0,3);
+  thumbCv.forEach((th,i)=>{
+    const t=tops[i];
+    if(!t || t.age<6){ th.box.style.display="none"; return; }
+    th.box.style.display="block";
+    let sx=t.x; if(state.mirror) sx=W-sx;
+    const vx=(sx-m.ox)/m.scale, vy=(t.y-m.oy)/m.scale;
+    const crop=Math.max(80, Math.max(t.w,t.h)/m.scale*2);
+    try{
+      th.ctx.save();
+      if(state.mirror){ th.ctx.translate(96,0); th.ctx.scale(-1,1); }
+      th.ctx.drawImage(video, vx-crop/2, vy-crop*0.75/2, crop, crop*0.75, 0,0,96,72);
+      th.ctx.restore();
+    }catch(e){}
+    th.ctx.strokeStyle=GREEN; th.ctx.strokeRect(34,22,28,28);
+    th.label.textContent=`AUTO OBJ TRACK-${pad3(t.id)}${t.label?(" · "+t.label):""}`;
+  });
+}
+
+/* ---------- main loop ---------- */
+let frameToggle=0;
+function loop(now){
+  if(!state.running) return;
+  state.frames++;
+  frameToggle^=1;
+  if(frameToggle && video.readyState>=2){
+    const boxes=detectMotion();
+    updateTrackers(boxes);
+  }
+  renderFX();
+  drawHUD(now);
+  drawInspector();
+  drawRadar(now);
+  drawThumbs(now);
+  requestAnimationFrame(loop);
+}
+
+/* periodic auto log of significant tracks */
+setInterval(()=>{
+  if(!state.running) return;
+  for(const t of trackers){
+    if(t.age>0 && t.age%120===0){
+      logEvent(`TRK-${pad3(t.id)} ${t.label||"UNSCANNED"} · X${t.x|0} Y${t.y|0} v${Math.hypot(t.vx,t.vy).toFixed(1)} · life ${t.age}f`);
+    }
+  }
+},1000);
+</script>
+</body>
+</html>
