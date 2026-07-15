@@ -1,6 +1,6 @@
 //
 //  CameraEngine.swift
-//  Panopticore
+//  CyberEye
 //
 //  Captura de cámara + detección de micro-movimiento + rastreo tipo Kalman
 //  (filtro alfa-beta) + autolock + memoria de objetivo + etiquetado neuronal
@@ -98,7 +98,7 @@ final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
     @Published var lockRadius: Double = 190      // px de buffer
     @Published var reticleRadius: Double = 160   // px de buffer
 
-    private let procQueue = DispatchQueue(label: "panopticore.proc")
+    private let procQueue = DispatchQueue(label: "cybereye.proc")
     private let output = AVCaptureVideoDataOutput()
     private let ciContext = CIContext(options: [.cacheIntermediates: false])
 

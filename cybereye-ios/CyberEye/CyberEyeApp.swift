@@ -1,12 +1,12 @@
 //
-//  PanopticoreApp.swift
-//  Panopticore
+//  CyberEyeApp.swift
+//  CyberEye
 //
 
 import SwiftUI
 
 @main
-struct PanopticoreApp: App {
+struct CyberEyeApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()

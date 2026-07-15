@@ -7,19 +7,19 @@
 	objects = {
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		AA10000129F0000000000001 /* Panopticore */ = {
+		AA10000129F0000000000001 /* CyberEye */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			explicitFileTypes = {
 			};
 			explicitFolders = (
 			);
-			path = Panopticore;
+			path = CyberEye;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFileReference section */
-		AA10000229F0000000000002 /* Panopticore.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Panopticore.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA10000229F0000000000002 /* CyberEye.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CyberEye.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -36,7 +36,7 @@
 		AA10000429F0000000000004 = {
 			isa = PBXGroup;
 			children = (
-				AA10000129F0000000000001 /* Panopticore */,
+				AA10000129F0000000000001 /* CyberEye */,
 				AA10000529F0000000000005 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -44,7 +44,7 @@
 		AA10000529F0000000000005 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				AA10000229F0000000000002 /* Panopticore.app */,
+				AA10000229F0000000000002 /* CyberEye.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -52,9 +52,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		AA10000629F0000000000006 /* Panopticore */ = {
+		AA10000629F0000000000006 /* CyberEye */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = AA10000729F0000000000007 /* Build configuration list for PBXNativeTarget "Panopticore" */;
+			buildConfigurationList = AA10000729F0000000000007 /* Build configuration list for PBXNativeTarget "CyberEye" */;
 			buildPhases = (
 				AA10000829F0000000000008 /* Sources */,
 				AA10000329F0000000000003 /* Frameworks */,
@@ -65,13 +65,13 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				AA10000129F0000000000001 /* Panopticore */,
+				AA10000129F0000000000001 /* CyberEye */,
 			);
-			name = Panopticore;
+			name = CyberEye;
 			packageProductDependencies = (
 			);
-			productName = Panopticore;
-			productReference = AA10000229F0000000000002 /* Panopticore.app */;
+			productName = CyberEye;
+			productReference = AA10000229F0000000000002 /* CyberEye.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -89,7 +89,7 @@
 					};
 				};
 			};
-			buildConfigurationList = AA10000B29F000000000000B /* Build configuration list for PBXProject "Panopticore" */;
+			buildConfigurationList = AA10000B29F000000000000B /* Build configuration list for PBXProject "CyberEye" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -103,7 +103,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				AA10000629F0000000000006 /* Panopticore */,
+				AA10000629F0000000000006 /* CyberEye */,
 			);
 		};
 /* End PBXProject section */
@@ -258,7 +258,7 @@
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_NSCameraUsageDescription = "PANOPTICORE analiza el video de la cámara localmente en tu iPhone para detectar y rastrear movimiento. El video nunca sale del dispositivo.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "CYBEREYE analiza el video de la cámara localmente en tu iPhone para detectar y rastrear movimiento. El video nunca sale del dispositivo.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Solo si activas GEOLOG PANEL: muestra tu posición en la telemetría. Nunca se envía a ningún servidor.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -271,7 +271,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.leo.panopticore;
+				PRODUCT_BUNDLE_IDENTIFIER = com.leo.cybereye;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
@@ -289,7 +289,7 @@
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_NSCameraUsageDescription = "PANOPTICORE analiza el video de la cámara localmente en tu iPhone para detectar y rastrear movimiento. El video nunca sale del dispositivo.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "CYBEREYE analiza el video de la cámara localmente en tu iPhone para detectar y rastrear movimiento. El video nunca sale del dispositivo.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Solo si activas GEOLOG PANEL: muestra tu posición en la telemetría. Nunca se envía a ningún servidor.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -302,7 +302,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.leo.panopticore;
+				PRODUCT_BUNDLE_IDENTIFIER = com.leo.cybereye;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
@@ -313,7 +313,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		AA10000729F0000000000007 /* Build configuration list for PBXNativeTarget "Panopticore" */ = {
+		AA10000729F0000000000007 /* Build configuration list for PBXNativeTarget "CyberEye" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				AA10000E29F000000000000E /* Debug */,
@@ -322,7 +322,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		AA10000B29F000000000000B /* Build configuration list for PBXProject "Panopticore" */ = {
+		AA10000B29F000000000000B /* Build configuration list for PBXProject "CyberEye" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				AA10000C29F000000000000C /* Debug */,

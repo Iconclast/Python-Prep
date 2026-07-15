@@ -1,6 +1,6 @@
 //
 //  Managers.swift
-//  Panopticore
+//  CyberEye
 //
 //  GPS opcional (GEOLOG, apagado por defecto) y actitud del dispositivo
 //  (rumbo/inclinación) para la telemetría. Nada sale del iPhone.

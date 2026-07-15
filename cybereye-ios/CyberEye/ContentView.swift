@@ -1,8 +1,8 @@
 //
 //  ContentView.swift
-//  Panopticore
+//  CyberEye
 //
-//  HUD estilo PANOPTICORE: telemetría, cajas de rastreo, puntos de
+//  HUD estilo CYBEREYE: telemetría, cajas de rastreo, puntos de
 //  movimiento, ventanas AUTO MAG-TRACK con líneas conectoras, radar,
 //  reporte de tracks únicos y panel avanzado.
 //
@@ -180,7 +180,7 @@ struct BootView: View {
     let onStart: () -> Void
 
     private let lines = [
-        "PANOPTICORE // EXPERIMENTAL SENSOR SUITE",
+        "CYBEREYE // EXPERIMENTAL SENSOR SUITE",
         "native iOS build V1.0",
         "",
         "[ OK ] micro-motion detector ...... armed",
@@ -216,7 +216,7 @@ struct BootView: View {
                 }
             }
             if denied {
-                Text("SENSOR FAULT: permiso de cámara denegado.\nAjustes > Panopticore > Cámara > Permitir")
+                Text("SENSOR FAULT: permiso de cámara denegado.\nAjustes > CyberEye > Cámara > Permitir")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(Color.sigRed)
             }
@@ -360,7 +360,7 @@ struct TelemetryBlock: View {
         } ?? "GPS: OFF"
 
         VStack(alignment: .leading, spacing: 1) {
-            Text("PANOPTICORE // EXPERIMENTAL SENSOR SUITE")
+            Text("CYBEREYE // EXPERIMENTAL SENSOR SUITE")
             Text("THRESH: \(Int(engine.sensitivity))  MIN AREA: \(Int(engine.minArea))  POINTS: \(hud.tracks.count)/\(Int(engine.maxPoints))")
             Text("LOCK: \(lockLine)")
             Text("HDG:\(deg(tilt.heading)) PITCH:\(deg(tilt.pitch)) ROLL:\(deg(tilt.roll))")
@@ -611,7 +611,7 @@ struct ReportView: View {
                     let hud = engine.hud
                     Group {
                         Text("OP REPORT  GENERATED \(Date().formatted(date: .abbreviated, time: .standard))")
-                        Text("PANOPTICORE-CLASS OPERATION SURVEILLANCE REPORT")
+                        Text("CYBEREYE-CLASS OPERATION SURVEILLANCE REPORT")
                         Text("────────────────────────────")
                         Text("FRAME SAMPLES: \(hud.frames)")
                         Text("MOTION SAMPLES TOTAL: \(hud.motionSamples)")
