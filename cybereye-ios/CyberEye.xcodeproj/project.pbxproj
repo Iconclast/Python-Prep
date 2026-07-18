@@ -260,6 +260,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "CYBEREYE analiza el video de la cámara localmente en tu iPhone para detectar y rastrear movimiento. El video nunca sale del dispositivo.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Solo si activas GEOLOG PANEL: muestra tu posición en la telemetría. Nunca se envía a ningún servidor.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Para guardar en Fotos los videos que grabas con el botón lateral de cámara. Nada se envía a ningún servidor.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -291,6 +292,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "CYBEREYE analiza el video de la cámara localmente en tu iPhone para detectar y rastrear movimiento. El video nunca sale del dispositivo.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Solo si activas GEOLOG PANEL: muestra tu posición en la telemetría. Nunca se envía a ningún servidor.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Para guardar en Fotos los videos que grabas con el botón lateral de cámara. Nada se envía a ningún servidor.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

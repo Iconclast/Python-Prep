@@ -14,6 +14,7 @@
 
 import AVFoundation
 import CoreImage
+import CoreML
 import SwiftUI
 import UIKit
 import Vision
@@ -133,6 +134,10 @@ final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
     private var lockMiss = 0
     private var lockFrames = 0
 
+    // Detector YOLO empaquetado en la app (sin red; corre en el Neural Engine)
+    private var yolo: VNCoreMLModel?
+    @Published var yoloActive = false
+
     private let bufferLock = NSLock()
     private var latestBuffer: CVPixelBuffer?
     private var magTimer: Timer?
@@ -156,6 +161,7 @@ final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
                 return
             }
             self.procQueue.async {
+                self.loadYOLO()
                 self.configureSession()
                 self.session.startRunning()
                 self.applyZoom(display: 1, ramp: false)
@@ -384,13 +390,74 @@ final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
             visionTick += 1
             let (boxes, specks) = detectMotion(in: pb)
             updateTracks(with: boxes)
-            if visionTick % 4 == 0 { detectHumans(pb) }        // ~4 veces/s
-            if visionTick % 8 == 0 { classifyTracks(pb) }      // ~2 veces/s
+            if yolo != nil {
+                if visionTick % 3 == 0 { runYOLO(pb) }         // ~5 veces/s
+            } else {
+                if visionTick % 4 == 0 { detectHumans(pb) }    // respaldo
+                if visionTick % 8 == 0 { classifyTracks(pb) }
+            }
             publishHUD(speckles: specks)
         }
     }
 
-    // MARK: Reconocimiento de personas (continuo)
+    // MARK: YOLO empaquetado (detección de 80 clases, en el dispositivo)
+
+    /// Solo en procQueue. El modelo viaja dentro de la app: cero descargas.
+    private func loadYOLO() {
+        guard let url = Bundle.main.url(forResource: "yolov8n", withExtension: "mlmodelc"),
+              let ml = try? MLModel(contentsOf: url),
+              let vn = try? VNCoreMLModel(for: ml) else {
+            log("YOLO NO DISPONIBLE · MODO CLASIFICADOR")
+            return
+        }
+        yolo = vn
+        DispatchQueue.main.async { self.yoloActive = true }
+        log("YOLO CORE ONLINE · 80 CLASSES · ON-DEVICE", highlight: true)
+    }
+
+    /// Solo en procQueue. Detecta y etiqueta objetos; alimenta los tracks.
+    private func runYOLO(_ pb: CVPixelBuffer) {
+        guard let yolo else { return }
+        let request = VNCoreMLRequest(model: yolo)
+        request.imageCropAndScaleOption = .scaleFill
+        let handler = VNImageRequestHandler(cvPixelBuffer: pb, options: [:])
+        guard (try? handler.perform([request])) != nil,
+              let results = request.results as? [VNRecognizedObjectObservation] else { return }
+        let now = CACurrentMediaTime()
+        for o in results where o.confidence > 0.35 {
+            guard let top = o.labels.first else { continue }
+            let b = o.boundingBox
+            let x = b.midX * bufW, y = (1 - b.midY) * bufH
+            let w = b.width * bufW, h = b.height * bufH
+            let label = top.identifier.uppercased()
+            var best: Track?; var bd = CGFloat.greatestFiniteMagnitude
+            for t in tracks {
+                let dd = (t.x - x) * (t.x - x) + (t.y - y) * (t.y - y)
+                if dd < bd { bd = dd; best = t }
+            }
+            if let t = best, bd < 220 * 220 {
+                t.x = t.x * 0.4 + x * 0.6
+                t.y = t.y * 0.4 + y * 0.6
+                t.w = w; t.h = h
+                t.miss = 0
+                t.age = max(t.age, 10)
+                t.label = label
+                t.labelConf = Double(top.confidence)
+                t.labelAt = now
+            } else if tracks.count < Int(maxPoints) {
+                let t = Track(id: nextId, x: x, y: y, w: w, h: h, area: Int(w * h / 100))
+                t.age = 10
+                t.label = label
+                t.labelConf = Double(top.confidence)
+                t.labelAt = now
+                tracks.append(t)
+                nextId += 1
+                log("\(label) DETECTED X\(Int(x)) Y\(Int(y))", highlight: true)
+            }
+        }
+    }
+
+    // MARK: Reconocimiento de personas (respaldo sin YOLO)
 
     private func detectHumans(_ pb: CVPixelBuffer) {
         let request = VNDetectHumanRectanglesRequest()

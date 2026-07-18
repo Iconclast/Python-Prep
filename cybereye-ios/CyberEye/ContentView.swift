@@ -34,6 +34,7 @@ enum ThemeChoice: String, CaseIterable, Identifiable {
 
 struct CameraPreview: UIViewRepresentable {
     let session: AVCaptureSession
+    var onCaptureButton: (() -> Void)? = nil
 
     final class PreviewView: UIView {
         override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
@@ -44,6 +45,15 @@ struct CameraPreview: UIViewRepresentable {
         let v = PreviewView()
         v.previewLayer.session = session
         v.previewLayer.videoGravity = .resizeAspectFill
+        // Botones físicos (Control de Cámara del iPhone 16 Pro o volumen):
+        // alternan la grabación sin ocupar espacio en la interfaz.
+        if #available(iOS 17.2, *), let onCaptureButton {
+            let interaction = AVCaptureEventInteraction { event in
+                if event.phase == .began { onCaptureButton() }
+            }
+            interaction.isEnabled = true
+            v.addInteraction(interaction)
+        }
         return v
     }
 
@@ -78,6 +88,7 @@ struct ContentView: View {
     @StateObject private var engine = CameraEngine()
     @StateObject private var geolog = GeologManager()
     @StateObject private var tilt = TiltManager()
+    @StateObject private var recorder = ScreenRecorder()
 
     @AppStorage("theme") private var themeRaw = ThemeChoice.verde.rawValue
     @AppStorage("uiScale") private var uiScale = 1.0
@@ -96,7 +107,9 @@ struct ContentView: View {
             ZStack {
                 Color.black.ignoresSafeArea()
                 if booted {
-                    CameraPreview(session: engine.session).ignoresSafeArea()
+                    CameraPreview(session: engine.session,
+                                  onCaptureButton: { recorder.toggle() })
+                        .ignoresSafeArea()
 
                     HUDCanvas(hud: engine.hud, viewSize: geo.size,
                               theme: theme, scale: uiScale,
@@ -172,6 +185,13 @@ struct ContentView: View {
                             .frame(width: 7, height: 7)
                         Text(statusLine)
                             .lineLimit(1)
+                        if recorder.isRecording {
+                            Circle().fill(.red).frame(width: 7, height: 7)
+                                .opacity(0.9)
+                            Text("REC").foregroundStyle(.red)
+                        } else if let note = recorder.note {
+                            Text(note).foregroundStyle(.red)
+                        }
                     }
                     if showTelemetry { telemetryDetail }
                 }
@@ -625,6 +645,16 @@ struct SettingsView: View {
                 }
                 Section("ZOOM") {
                     Text("Pellizca la pantalla para hacer zoom. Los botones .5 / 1 / \(engine.lensOptions.count > 2 ? "tele" : "2") cambian de lente, como la app de cámara.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                Section("GRABACIÓN") {
+                    Text("Pulsa el botón de Control de Cámara (iPhone 16 Pro) o un botón de volumen para iniciar y detener la grabación de lo que ves (cámara + HUD). El video se guarda en Fotos. Verás un punto rojo REC arriba mientras graba.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                Section("DETECTOR") {
+                    Text(engine.yoloActive
+                         ? "YOLO integrado activo: 80 clases (personas, carros, motos, animales…) detectadas en el Neural Engine del iPhone. Sin internet: el modelo viaja dentro de la app."
+                         : "YOLO no disponible — usando detectores del sistema (personas + clasificador).")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("RASTREO") {
