@@ -2,9 +2,13 @@
 //  CameraEngine.swift
 //  CyberEye
 //
-//  Captura de cámara + detección de micro-movimiento + rastreo tipo Kalman
-//  (filtro alfa-beta) + autolock + memoria de objetivo + etiquetado neuronal
-//  con Vision (100% en el dispositivo; el video nunca sale del iPhone).
+//  V2 — Rastreo real:
+//  · El objetivo fijado se sigue con VNTrackObjectRequest (el rastreador
+//    visual de Apple), suave y robusto, cuadro a cuadro.
+//  · La detección de movimiento usa fondo adaptativo + suavizado temporal
+//    (menos ruido, sin parpadeo de puntos).
+//  · Se puede fijar cualquier cosa tocándola en pantalla, se mueva o no.
+//  Todo 100% en el dispositivo; el video nunca sale del iPhone.
 //
 
 import AVFoundation
@@ -17,19 +21,17 @@ import Vision
 
 struct TrackBox: Identifiable {
     let id: Int
-    var pos: CGPoint        // píxeles del buffer (portrait, p.ej. 720x1280)
+    var pos: CGPoint        // píxeles del buffer (portrait)
     var size: CGSize
-    var velocity: CGVector
     var area: Int
     var age: Int
-    var label: String?
-    var conf: Double
-    var trail: [CGPoint]
 }
 
-struct MemoryGhost {
+struct LockInfo {
     var pos: CGPoint
+    var size: CGSize
     var conf: Double
+    var label: String?
 }
 
 struct TrackEvent: Identifiable {
@@ -42,20 +44,15 @@ struct TrackEvent: Identifiable {
 struct HUDState {
     var tracks: [TrackBox] = []
     var speckles: [CGPoint] = []
-    var lockId: Int? = nil
-    var memory: MemoryGhost? = nil
-    var status: String = "AUTOLOCK: SCANNING FIELD"
-    var statusIsAlert: Bool = false
+    var lock: LockInfo? = nil
+    var status: String = "SCANNING"
     var fps: Int = 0
     var frames: Int = 0
     var motionSamples: Int = 0
     var uniqueTracks: Int = 0
-    var tag: String = "UNSCANNED"
-    var tagConf: Double = 0
     var bufferSize: CGSize = CGSize(width: 720, height: 1280)
 }
 
-// Tracker interno mutable (solo se toca en la cola de proceso)
 private final class Track {
     let id: Int
     var x: CGFloat, y: CGFloat
@@ -65,13 +62,9 @@ private final class Track {
     var age = 1
     var miss = 0
     var matched = true
-    var label: String?
-    var conf: Double = 0
-    var trail: [CGPoint]
 
     init(id: Int, x: CGFloat, y: CGFloat, w: CGFloat, h: CGFloat, area: Int) {
         self.id = id; self.x = x; self.y = y; self.w = w; self.h = h; self.area = area
-        self.trail = [CGPoint(x: x, y: y)]
     }
 }
 
@@ -85,44 +78,45 @@ final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
     @Published var events: [TrackEvent] = []
     @Published var cameraDenied = false
     @Published var running = false
-    @Published var magImages: [Int: UIImage] = [:]
+    @Published var magImages: [String: UIImage] = [:]
 
-    // Parámetros ajustables (panel ADV)
+    // Ajustes (panel de configuración)
     @Published var autolock = true
     @Published var showSpeckle = true
-    @Published var showMags = true
+    @Published var extraWindows = 1          // ventanas MAG adicionales (0–3)
     @Published var ufoMode = false
-    @Published var sensitivity: Double = 28      // umbral de diferencia de gris
-    @Published var minArea: Double = 8           // masa mínima de movimiento
-    @Published var maxPoints: Double = 14
-    @Published var lockRadius: Double = 190      // px de buffer
-    @Published var reticleRadius: Double = 160   // px de buffer
+    @Published var sensitivity: Double = 26
+    @Published var minArea: Double = 10
+    @Published var maxPoints: Double = 10
 
     private let procQueue = DispatchQueue(label: "cybereye.proc")
     private let output = AVCaptureVideoDataOutput()
     private let ciContext = CIContext(options: [.cacheIntermediates: false])
 
     // Estado interno (solo en procQueue)
-    private var prevGray: [UInt8]?
+    private var bg: [Float] = []             // fondo adaptativo
+    private var heat: [Float] = []           // suavizado temporal por celda
     private var procW = 0, procH = 0
     private var tracks: [Track] = []
     private var nextId = 1
-    private var lockId: Int? = nil
-    private var memory: (x: CGFloat, y: CGFloat, vx: CGFloat, vy: CGFloat,
-                         since: CFTimeInterval, label: String?)? = nil
     private var frameCount = 0
     private var motionTotal = 0
     private var frameToggle = false
     private var fpsCounter = 0
     private var fpsStamp = CACurrentMediaTime()
     private var fpsValue = 0
-    private var statusText = "AUTOLOCK: SCANNING FIELD"
-    private var statusAlert = false
+    private var statusText = "SCANNING"
     private var statusUntil: CFTimeInterval = 0
-    private var snapTag = "UNSCANNED"
-    private var snapConf: Double = 0
     private var snapBusy = false
     private var bufW: CGFloat = 720, bufH: CGFloat = 1280
+
+    // Rastreo del objetivo con Vision
+    private var seqHandler = VNSequenceRequestHandler()
+    private var lockObservation: VNDetectedObjectObservation?
+    private var lockLabel: String?
+    private var lockConf: Double = 0
+    private var lockMiss = 0
+    private var lockFrames = 0
 
     private let bufferLock = NSLock()
     private var latestBuffer: CVPixelBuffer?
@@ -142,12 +136,11 @@ final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
                 self.session.startRunning()
                 DispatchQueue.main.async {
                     self.running = true
-                    // refresco de las ventanas MAG-TRACK a 4 fps
-                    self.magTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+                    self.magTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
                         self?.refreshMagImages()
                     }
                 }
-                self.log("SENSOR ONLINE · OPTICAL FEED ACQUIRED", highlight: true)
+                self.log("SENSOR ONLINE", highlight: true)
             }
         }
     }
@@ -168,118 +161,123 @@ final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
             if session.canAddOutput(output) { session.addOutput(output) }
         }
         if let conn = output.connection(with: .video), conn.isVideoRotationAngleSupported(90) {
-            conn.videoRotationAngle = 90   // buffers en vertical
+            conn.videoRotationAngle = 90
         }
         session.commitConfiguration()
     }
 
-    // MARK: Acciones del operador
+    // MARK: Fijar / soltar objetivo
 
-    func captureFromReticle() {
+    /// Fija lo que esté en ese punto del buffer: el track de movimiento más
+    /// cercano, o —si no hay— un parche fijo (Vision puede seguir lo que sea).
+    func lockAt(bufferPoint p: CGPoint) {
         procQueue.async {
-            let cx = self.bufW / 2, cy = self.bufH / 2
             var best: Track?; var bd = CGFloat.greatestFiniteMagnitude
             for t in self.tracks {
-                let dd = (t.x - cx) * (t.x - cx) + (t.y - cy) * (t.y - cy)
+                let dd = (t.x - p.x) * (t.x - p.x) + (t.y - p.y) * (t.y - p.y)
                 if dd < bd { bd = dd; best = t }
             }
-            let r = CGFloat(self.reticleRadius)
-            if let b = best, bd < r * r {
-                self.lockId = b.id; self.memory = nil
-                self.setStatus("LOCKED FROM RETICLE X\(Int(b.x)) Y\(Int(b.y)) A\(b.area)")
-                self.log("TRK-\(Self.pad(b.id)) RETICLE LOCK X\(Int(b.x)) Y\(Int(b.y)) A\(b.area)", highlight: true)
+            if let t = best, bd < 180 * 180 {
+                self.seedLock(x: t.x, y: t.y, w: t.w, h: t.h, source: "TAP LOCK")
             } else {
-                self.setStatus("CAPTURE ARMED: NO MOTION IN RETICLE", alert: true)
+                self.seedLock(x: p.x, y: p.y, w: 150, h: 150, source: "TAP LOCK")
             }
         }
     }
 
     func unlock() {
         procQueue.async {
-            self.lockId = nil; self.memory = nil
-            self.snapTag = "UNSCANNED"; self.snapConf = 0
-            self.setStatus("TARGET LOST - RETICLE READY", alert: true)
-            self.log("OPERATOR UNLOCK · TRACK RELEASED")
+            self.lockObservation = nil
+            self.lockLabel = nil
+            self.lockConf = 0
+            self.setStatus("TARGET RELEASED")
+            self.log("OPERATOR UNLOCK")
         }
     }
 
-    /// Etiquetado neuronal de un disparo con Vision (modelo integrado en iOS).
+    /// Solo en procQueue.
+    private func seedLock(x: CGFloat, y: CGFloat, w: CGFloat, h: CGFloat, source: String) {
+        let bw = max(bufW, 1), bh = max(bufH, 1)
+        let nw = min(0.4, max(0.07, w * 1.4 / bw))
+        let nh = min(0.4, max(0.07, h * 1.4 / bh))
+        var rect = CGRect(x: x / bw - nw / 2, y: (1 - y / bh) - nh / 2, width: nw, height: nh)
+        rect.origin.x = max(0, min(1 - nw, rect.origin.x))
+        rect.origin.y = max(0, min(1 - nh, rect.origin.y))
+        lockObservation = VNDetectedObjectObservation(boundingBox: rect)
+        seqHandler = VNSequenceRequestHandler()
+        lockMiss = 0
+        lockFrames = 0
+        lockConf = 1
+        setStatus("\(source) X\(Int(x)) Y\(Int(y))")
+        log("\(source) X\(Int(x)) Y\(Int(y))", highlight: true)
+    }
+
+    /// Etiquetado neuronal del objetivo (Vision, en el dispositivo).
     func snapClassify() {
         bufferLock.lock()
         let buffer = latestBuffer
         bufferLock.unlock()
         guard let buffer, !snapBusy else { return }
         snapBusy = true
-        setStatus("NEURAL SNAP QUEUED")
+        setStatus("NEURAL SNAP…")
         DispatchQueue.global(qos: .userInitiated).async {
             defer { self.snapBusy = false }
             let request = VNClassifyImageRequest()
             let handler = VNImageRequestHandler(cvPixelBuffer: buffer, options: [:])
             guard (try? handler.perform([request])) != nil,
-                  let results = request.results?.filter({ $0.confidence > 0.35 }),
-                  let top = results.first else {
-                self.procQueue.async {
-                    self.setStatus("NEURAL SNAP: UNKNOWN / IDLE", alert: true)
-                    self.log("SNAP RETURNED 0 CLASSIFICATIONS")
-                }
+                  let top = request.results?.first(where: { $0.confidence > 0.3 }) else {
+                self.procQueue.async { self.setStatus("SNAP: UNKNOWN") }
                 return
             }
             let label = top.identifier.uppercased()
             let conf = Double(top.confidence)
             self.procQueue.async {
-                self.snapTag = label; self.snapConf = conf
-                if let id = self.lockId, let t = self.tracks.first(where: { $0.id == id }) {
-                    t.label = label; t.conf = conf
-                }
-                self.setStatus("NEURAL SNAP TAGGED: \(label) \(String(format: "%.2f", conf))")
+                self.lockLabel = label
+                self.setStatus("SNAP: \(label) \(String(format: "%.2f", conf))")
                 self.log("SNAP TAG: \(label) \(String(format: "%.2f", conf))", highlight: true)
             }
         }
     }
 
-    /// Regenera los recortes ampliados de las ventanas MAG-TRACK
-    /// (objetivo fijado + los 3 tracks más grandes). Corre en main a 4 fps.
+    // MARK: Recortes MAG (sin parpadeo: conservan la última imagen)
+
     private func refreshMagImages() {
+        var result = magImages
         let state = hud
-        var ids: [Int] = []
-        if let lock = state.lockId { ids.append(lock) }
-        ids.append(contentsOf: state.tracks
-            .filter { $0.id != state.lockId && $0.age >= 8 }
+        if let lock = state.lock {
+            if let img = magCrop(center: lock.pos, boxSize: lock.size) { result["lock"] = img }
+        }
+        let tops = state.tracks
+            .filter { $0.age >= 10 }
             .sorted { $0.area > $1.area }
-            .prefix(3)
-            .map(\.id))
-        var result: [Int: UIImage] = [:]
-        for id in ids {
-            guard let t = state.tracks.first(where: { $0.id == id }) else { continue }
-            if let img = magCrop(center: t.pos, boxSize: t.size, aspect: 1.49) {
-                result[id] = img
-            }
+            .prefix(extraWindows)
+        for (i, t) in tops.enumerated() {
+            if let img = magCrop(center: t.pos, boxSize: t.size) { result["t\(i)"] = img }
         }
         magImages = result
     }
 
-    /// Recorte ampliado alrededor de un punto (para las ventanas MAG-TRACK).
-    func magCrop(center: CGPoint, boxSize: CGSize, aspect: CGFloat) -> UIImage? {
+    private func magCrop(center: CGPoint, boxSize: CGSize) -> UIImage? {
         bufferLock.lock()
         let buffer = latestBuffer
         bufferLock.unlock()
         guard let buffer else { return nil }
         let bw = CGFloat(CVPixelBufferGetWidth(buffer))
         let bh = CGFloat(CVPixelBufferGetHeight(buffer))
-        var cw = max(140, max(boxSize.width, boxSize.height) * 2)
+        let aspect: CGFloat = 1.5
+        var cw = max(160, max(boxSize.width, boxSize.height) * 2.2)
         var ch = cw / aspect
         cw = min(cw, bw); ch = min(ch, bh)
         var ox = center.x - cw / 2, oy = center.y - ch / 2
         ox = max(0, min(bw - cw, ox))
         oy = max(0, min(bh - ch, oy))
-        // CIImage tiene origen abajo-izquierda; el buffer arriba-izquierda
         let ciRect = CGRect(x: ox, y: bh - oy - ch, width: cw, height: ch)
         let ci = CIImage(cvPixelBuffer: buffer).cropped(to: ciRect)
         guard let cg = ciContext.createCGImage(ci, from: ciRect) else { return nil }
         return UIImage(cgImage: cg)
     }
 
-    // MARK: Captura y procesamiento
+    // MARK: Captura
 
     func captureOutput(_ output: AVCaptureOutput,
                        didOutput sampleBuffer: CMSampleBuffer,
@@ -289,21 +287,69 @@ final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
         latestBuffer = pb
         bufferLock.unlock()
 
+        bufW = CGFloat(CVPixelBufferGetWidth(pb))
+        bufH = CGFloat(CVPixelBufferGetHeight(pb))
         frameCount += 1
         fpsCounter += 1
         let now = CACurrentMediaTime()
         if now - fpsStamp > 1 {
             fpsValue = fpsCounter; fpsCounter = 0; fpsStamp = now
         }
+
+        trackLockWithVision(pb)      // cada cuadro: rastreo suave del objetivo
+
         frameToggle.toggle()
         if frameToggle {
-            let boxes = detectMotion(in: pb)
-            updateTracks(with: boxes.0, speckles: boxes.1, now: now)
+            let (boxes, specks) = detectMotion(in: pb)
+            updateTracks(with: boxes)
+            publishHUD(speckles: specks)
         }
     }
 
-    /// Diferencia de cuadros a baja resolución + componentes conexos.
-    /// Devuelve (cajas, puntos de movimiento) en píxeles del buffer.
+    // MARK: Rastreo del objetivo (Vision)
+
+    private func trackLockWithVision(_ pb: CVPixelBuffer) {
+        guard let obs = lockObservation else { return }
+        lockFrames += 1
+        // reinicio periódico del handler (evita crecimiento de memoria)
+        if lockFrames % 240 == 0 {
+            seqHandler = VNSequenceRequestHandler()
+        }
+        let request = VNTrackObjectRequest(detectedObjectObservation: obs)
+        request.trackingLevel = .accurate
+        do {
+            try seqHandler.perform([request], on: pb)
+        } catch {
+            lockMiss += 1
+        }
+        if let r = request.results?.first as? VNDetectedObjectObservation,
+           r.confidence > 0.2 {
+            lockObservation = r
+            lockConf = Double(r.confidence)
+            lockMiss = 0
+        } else {
+            lockMiss += 1
+        }
+        if lockMiss > 25 {
+            lockObservation = nil
+            lockConf = 0
+            setStatus("TARGET LOST")
+            log("TARGET LOST · TRACKER DROPPED")
+        }
+    }
+
+    private func currentLockInfo() -> LockInfo? {
+        guard let obs = lockObservation else { return nil }
+        let b = obs.boundingBox
+        return LockInfo(
+            pos: CGPoint(x: b.midX * bufW, y: (1 - b.midY) * bufH),
+            size: CGSize(width: b.width * bufW, height: b.height * bufH),
+            conf: lockConf,
+            label: lockLabel)
+    }
+
+    // MARK: Detección de movimiento (fondo adaptativo + suavizado)
+
     private func detectMotion(in pb: CVPixelBuffer)
         -> ([(x: CGFloat, y: CGFloat, w: CGFloat, h: CGFloat, area: Int)], [CGPoint]) {
         CVPixelBufferLockBaseAddress(pb, .readOnly)
@@ -313,49 +359,55 @@ final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
         let bh = CVPixelBufferGetHeight(pb)
         let stride = CVPixelBufferGetBytesPerRow(pb)
         let ptr = base.assumingMemoryBound(to: UInt8.self)
-        bufW = CGFloat(bw); bufH = CGFloat(bh)
 
         let pw = 96
         let ph = max(60, pw * bh / bw)
-        if pw != procW || ph != procH { procW = pw; procH = ph; prevGray = nil }
+        let n = pw * ph
+        let cell = 3
+        let cw = (pw + cell - 1) / cell
+        let chh = (ph + cell - 1) / cell
+        if pw != procW || ph != procH {
+            procW = pw; procH = ph
+            bg = []; heat = [Float](repeating: 0, count: cw * chh)
+        }
 
-        var gray = [UInt8](repeating: 0, count: pw * ph)
+        var gray = [Float](repeating: 0, count: n)
         for y in 0..<ph {
             let sy = y * bh / ph
             let row = sy * stride
             for x in 0..<pw {
                 let sx = x * bw / pw
                 let o = row + sx * 4
-                let b = Int(ptr[o]), g = Int(ptr[o + 1]), r = Int(ptr[o + 2])
-                gray[y * pw + x] = UInt8((r * 3 + g * 6 + b) / 10)
+                gray[y * pw + x] = Float(Int(ptr[o]) * 3 + Int(ptr[o + 1]) * 6 + Int(ptr[o + 2])) / 10
             }
         }
-        guard let prev = prevGray else { prevGray = gray; return ([], []) }
-        prevGray = gray
+        if bg.count != n {
+            bg = gray
+            return ([], [])
+        }
 
-        let thr = UInt8(max(4, ufoMode ? sensitivity * 0.55 : sensitivity))
-        let cell = 3
-        let cw = (pw + cell - 1) / cell
-        let chh = (ph + cell - 1) / cell
+        // diferencia contra fondo adaptativo + actualización del fondo
+        let thr = Float(ufoMode ? max(6, sensitivity * 0.55) : sensitivity)
         var cells = [Int](repeating: 0, count: cw * chh)
         var total = 0
-        for y in 0..<ph {
-            for x in 0..<pw {
-                let i = y * pw + x
-                let d = gray[i] > prev[i] ? gray[i] - prev[i] : prev[i] - gray[i]
-                if d > thr {
-                    cells[(y / cell) * cw + (x / cell)] += 1
-                    total += 1
-                }
+        for i in 0..<n {
+            let d = abs(gray[i] - bg[i])
+            bg[i] += (gray[i] - bg[i]) * 0.08
+            if d > thr {
+                cells[((i / pw) / cell) * cw + ((i % pw) / cell)] += 1
+                total += 1
             }
         }
         motionTotal += total
 
+        // suavizado temporal por celda: mata el ruido de un solo cuadro
         let minCell = ufoMode ? 1 : 2
         var active = [Bool](repeating: false, count: cw * chh)
-        for i in 0..<(cw * chh) { active[i] = cells[i] >= minCell }
+        for i in 0..<(cw * chh) {
+            heat[i] = heat[i] * 0.55 + (cells[i] >= minCell ? 1 : 0)
+            active[i] = heat[i] > 0.75
+        }
 
-        // puntos de movimiento (speckles)
         var specks: [CGPoint] = []
         let sxScale = CGFloat(bw) / CGFloat(pw) * CGFloat(cell)
         let syScale = CGFloat(bh) / CGFloat(ph) * CGFloat(cell)
@@ -363,11 +415,10 @@ final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
             for cx in 0..<cw where active[cy * cw + cx] {
                 specks.append(CGPoint(x: (CGFloat(cx) + 0.5) * sxScale,
                                       y: (CGFloat(cy) + 0.5) * syScale))
-                if specks.count >= 400 { break outer }
+                if specks.count >= 300 { break outer }
             }
         }
 
-        // componentes conexos sobre celdas activas
         var seen = [Bool](repeating: false, count: cw * chh)
         var boxes: [(x: CGFloat, y: CGFloat, w: CGFloat, h: CGFloat, area: Int)] = []
         var stack: [Int] = []
@@ -405,9 +456,9 @@ final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
         return (boxes, specks)
     }
 
-    /// Asociación por vecino más cercano + filtro alfa-beta + memoria + autolock.
-    private func updateTracks(with boxes: [(x: CGFloat, y: CGFloat, w: CGFloat, h: CGFloat, area: Int)],
-                              speckles: [CGPoint], now: CFTimeInterval) {
+    // MARK: Asociación de tracks (propuestas de movimiento)
+
+    private func updateTracks(with boxes: [(x: CGFloat, y: CGFloat, w: CGFloat, h: CGFloat, area: Int)]) {
         for t in tracks { t.x += t.vx; t.y += t.vy; t.matched = false }
 
         for b in boxes {
@@ -416,122 +467,78 @@ final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
                 let dd = (t.x - b.x) * (t.x - b.x) + (t.y - b.y) * (t.y - b.y)
                 if dd < bd { bd = dd; best = t }
             }
-            let radius: CGFloat = (best?.id == lockId) ? CGFloat(lockRadius) : 140
-            if let t = best, bd < radius * radius {
-                let a: CGFloat = 0.45, g: CGFloat = 0.12
+            if let t = best, bd < 160 * 160 {
+                let a: CGFloat = 0.4, g: CGFloat = 0.1
                 let rx = b.x - t.x, ry = b.y - t.y
                 t.x += a * rx; t.y += a * ry
-                t.vx = (t.vx + g * rx) * 0.92
-                t.vy = (t.vy + g * ry) * 0.92
-                t.area = b.area; t.w = b.w; t.h = b.h
+                t.vx = (t.vx + g * rx) * 0.9
+                t.vy = (t.vy + g * ry) * 0.9
+                t.area = b.area
+                t.w = t.w * 0.7 + b.w * 0.3   // tamaño suavizado, sin saltos
+                t.h = t.h * 0.7 + b.h * 0.3
                 t.age += 1; t.miss = 0; t.matched = true
-                t.trail.append(CGPoint(x: t.x, y: t.y))
-                if t.trail.count > 18 { t.trail.removeFirst() }
             } else if tracks.count < Int(maxPoints) {
                 tracks.append(Track(id: nextId, x: b.x, y: b.y, w: b.w, h: b.h, area: b.area))
                 nextId += 1
             }
         }
 
-        // caducidad y paso a memoria
         var idx = tracks.count - 1
         while idx >= 0 {
             let t = tracks[idx]
             if !t.matched { t.miss += 1 }
-            let limit = t.id == lockId ? 45 : 14
-            if t.miss > limit || t.x < -100 || t.x > bufW + 100 || t.y < -100 || t.y > bufH + 100 {
-                if t.id == lockId {
-                    memory = (t.x, t.y, t.vx, t.vy, now, t.label)
-                    lockId = nil
-                    setStatus("TARGET MEMORY / SEARCHING 0s", alert: true)
-                    log("TRK-\(Self.pad(t.id)) SIGNAL LOST · MEMORY HOLD X\(Int(t.x)) Y\(Int(t.y))")
-                }
-                if t.age > 20 { log("TRK-\(Self.pad(t.id)) track end · life \(t.age)f · a\(t.area)") }
+            if t.miss > 25 || t.x < -100 || t.x > bufW + 100 || t.y < -100 || t.y > bufH + 100 {
+                if t.age > 40 { log("TRK-\(Self.pad(t.id)) end · life \(t.age)f") }
                 tracks.remove(at: idx)
             }
             idx -= 1
         }
 
-        // memoria: readquirir o expirar
-        if var mem = memory {
-            mem.x += mem.vx * 0.5; mem.y += mem.vy * 0.5
-            memory = mem
-            let ageS = now - mem.since
-            var best: Track?; var bd = CGFloat.greatestFiniteMagnitude
-            for t in tracks {
-                let dd = (t.x - mem.x) * (t.x - mem.x) + (t.y - mem.y) * (t.y - mem.y)
-                if dd < bd { bd = dd; best = t }
-            }
-            let r = CGFloat(lockRadius)
-            if let b = best, bd < r * r {
-                lockId = b.id
-                b.label = mem.label ?? b.label
-                memory = nil
-                setStatus("ADV LOCK REACQ X\(Int(b.x)) Y\(Int(b.y))")
-                log("TRK-\(Self.pad(b.id)) REACQUIRED FROM MEMORY", highlight: true)
-            } else if ageS > 6 {
-                memory = nil
-                setStatus("TARGET LOST - RETICLE READY", alert: true)
-                log("MEMORY EXPIRED · TARGET LOST")
-            } else {
-                setStatus("TARGET MEMORY / SEARCHING \(Int(ageS))s", alert: true)
-            }
-        }
-
-        // autolock: engancha el track más estable
-        if autolock && lockId == nil && memory == nil {
+        // autolock: siembra el rastreador Vision con el track más estable
+        if autolock && lockObservation == nil {
             var best: Track?; var score = -1
-            for t in tracks where t.age >= 10 {
+            for t in tracks where t.age >= 12 {
                 let s = t.area * min(t.age, 60)
                 if s > score { score = s; best = t }
             }
             if let b = best {
-                lockId = b.id
-                setStatus("AUTOLOCK ENGAGED TRK-\(Self.pad(b.id)) X\(Int(b.x)) Y\(Int(b.y))")
-                log("TRK-\(Self.pad(b.id)) AUTOLOCK X\(Int(b.x)) Y\(Int(b.y)) A\(b.area)", highlight: true)
+                seedLock(x: b.x, y: b.y, w: b.w, h: b.h, source: "AUTOLOCK")
             }
         }
-
-        publishHUD(speckles: speckles, now: now)
     }
 
-    private func publishHUD(speckles: [CGPoint], now: CFTimeInterval) {
+    private func publishHUD(speckles: [CGPoint]) {
         var state = HUDState()
-        state.tracks = tracks.map {
-            TrackBox(id: $0.id,
-                     pos: CGPoint(x: $0.x, y: $0.y),
-                     size: CGSize(width: max(50, $0.w), height: max(50, $0.h)),
-                     velocity: CGVector(dx: $0.vx, dy: $0.vy),
-                     area: $0.area, age: $0.age,
-                     label: $0.label, conf: $0.conf, trail: $0.trail)
-        }
+        state.tracks = tracks
+            .filter { $0.age >= 5 }
+            .map {
+                TrackBox(id: $0.id,
+                         pos: CGPoint(x: $0.x, y: $0.y),
+                         size: CGSize(width: max(56, $0.w), height: max(56, $0.h)),
+                         area: $0.area, age: $0.age)
+            }
         state.speckles = showSpeckle ? speckles : []
-        state.lockId = lockId
-        if let m = memory {
-            state.memory = MemoryGhost(pos: CGPoint(x: m.x, y: m.y),
-                                       conf: max(0, 0.8 - (now - m.since) * 0.13))
-        }
+        state.lock = currentLockInfo()
+        let now = CACurrentMediaTime()
         if now < statusUntil {
-            state.status = statusText; state.statusIsAlert = statusAlert
-        } else if let id = lockId, let t = tracks.first(where: { $0.id == id }) {
-            state.status = "ADV LOCK TRK-\(Self.pad(id)) X\(Int(t.x)) Y\(Int(t.y))"
+            state.status = statusText
+        } else if let lock = state.lock {
+            state.status = "LOCK X\(Int(lock.pos.x)) Y\(Int(lock.pos.y)) C\(String(format: "%.2f", lock.conf))"
         } else {
-            state.status = autolock ? "AUTOLOCK: SCANNING FIELD" : "RETICLE READY"
+            state.status = autolock ? "SCANNING" : "TAP TO LOCK"
         }
         state.fps = fpsValue
         state.frames = frameCount
         state.motionSamples = motionTotal
         state.uniqueTracks = nextId - 1
-        state.tag = snapTag
-        state.tagConf = snapConf
         state.bufferSize = CGSize(width: bufW, height: bufH)
         DispatchQueue.main.async { self.hud = state }
     }
 
     // MARK: Utilidades
 
-    private func setStatus(_ msg: String, alert: Bool = false) {
-        statusText = msg; statusAlert = alert
+    private func setStatus(_ msg: String) {
+        statusText = msg
         statusUntil = CACurrentMediaTime() + 2.5
     }
 

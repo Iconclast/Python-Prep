@@ -2,21 +2,32 @@
 //  ContentView.swift
 //  CyberEye
 //
-//  HUD estilo CYBEREYE: telemetría, cajas de rastreo, puntos de
-//  movimiento, ventanas AUTO MAG-TRACK con líneas conectoras, radar,
-//  reporte de tracks únicos y panel avanzado.
+//  V2 — Interfaz minimalista:
+//  · Una línea de estado arriba (tócala para ver la telemetría completa)
+//  · Toca cualquier cosa en pantalla para fijarla como objetivo
+//  · Ventanas MAG flotantes: arrastra para mover, pellizca para escalar
+//  · Color e escala de la interfaz ajustables en Ajustes
 //
 
 import AVFoundation
 import SwiftUI
 
-// MARK: - Colores del tema
+// MARK: - Tema
 
-extension Color {
-    static let sigGreen = Color(red: 0, green: 1, blue: 110 / 255)
-    static let sigAmber = Color(red: 1, green: 180 / 255, blue: 40 / 255)
-    static let sigRed = Color(red: 1, green: 50 / 255, blue: 50 / 255)
-    static let sigCyan = Color(red: 40 / 255, green: 220 / 255, blue: 1)
+enum ThemeChoice: String, CaseIterable, Identifiable {
+    case verde, cian, ambar, rojo, blanco, rosa
+    var id: String { rawValue }
+
+    var color: Color {
+        switch self {
+        case .verde: return Color(red: 0, green: 1, blue: 110 / 255)
+        case .cian: return Color(red: 40 / 255, green: 220 / 255, blue: 1)
+        case .ambar: return Color(red: 1, green: 180 / 255, blue: 40 / 255)
+        case .rojo: return Color(red: 1, green: 70 / 255, blue: 70 / 255)
+        case .blanco: return Color(red: 0.92, green: 0.96, blue: 0.94)
+        case .rosa: return Color(red: 1, green: 90 / 255, blue: 170 / 255)
+        }
+    }
 }
 
 // MARK: - Vista previa de cámara
@@ -39,7 +50,7 @@ struct CameraPreview: UIViewRepresentable {
     func updateUIView(_ uiView: PreviewView, context: Context) {}
 }
 
-// MARK: - Mapeo buffer → pantalla (aspect fill)
+// MARK: - Mapeo buffer ↔ pantalla (aspect fill)
 
 struct CoverMap {
     let scale: CGFloat
@@ -52,8 +63,12 @@ struct CoverMap {
         oy = (view.height - buffer.height * scale) / 2
     }
 
-    func point(_ p: CGPoint) -> CGPoint {
+    func toView(_ p: CGPoint) -> CGPoint {
         CGPoint(x: ox + p.x * scale, y: oy + p.y * scale)
+    }
+
+    func toBuffer(_ p: CGPoint) -> CGPoint {
+        CGPoint(x: (p.x - ox) / scale, y: (p.y - oy) / scale)
     }
 }
 
@@ -64,10 +79,16 @@ struct ContentView: View {
     @StateObject private var geolog = GeologManager()
     @StateObject private var tilt = TiltManager()
 
+    @AppStorage("theme") private var themeRaw = ThemeChoice.verde.rawValue
+    @AppStorage("uiScale") private var uiScale = 1.0
+
     @State private var booted = false
     @State private var showReport = false
-    @State private var showAdv = false
+    @State private var showSettings = false
+    @State private var showTelemetry = false
     @State private var showRadar = false
+
+    private var theme: Color { (ThemeChoice(rawValue: themeRaw) ?? .verde).color }
 
     var body: some View {
         GeometryReader { geo in
@@ -75,12 +96,37 @@ struct ContentView: View {
                 Color.black.ignoresSafeArea()
                 if booted {
                     CameraPreview(session: engine.session).ignoresSafeArea()
-                    HUDCanvas(hud: engine.hud, viewSize: geo.size)
+
+                    HUDCanvas(hud: engine.hud, viewSize: geo.size,
+                              theme: theme, scale: uiScale)
                         .ignoresSafeArea()
-                        .allowsHitTesting(false)
+                        .contentShape(Rectangle())
+                        .gesture(SpatialTapGesture().onEnded { v in
+                            let map = CoverMap(buffer: engine.hud.bufferSize, view: geo.size)
+                            engine.lockAt(bufferPoint: map.toBuffer(v.location))
+                        })
+
                     overlayUI(size: geo.size)
+
+                    // ventanas MAG flotantes (arrastrables, escalables)
+                    if let lock = engine.hud.lock {
+                        FloatingPanel(initial: CGPoint(x: geo.size.width - 105, y: 150)) {
+                            MagWindow(title: "LOCK",
+                                      image: engine.magImages["lock"],
+                                      footer: "X\(Int(lock.pos.x)) Y\(Int(lock.pos.y)) C\(String(format: "%.2f", lock.conf))\(lock.label.map { " · \($0)" } ?? "")",
+                                      width: 165 * uiScale, theme: theme, scale: uiScale)
+                        }
+                    }
+                    ForEach(0..<engine.extraWindows, id: \.self) { i in
+                        if let img = engine.magImages["t\(i)"] {
+                            FloatingPanel(initial: CGPoint(x: 80, y: 180 + CGFloat(i) * 130)) {
+                                MagWindow(title: "MAG-\(i + 1)", image: img, footer: nil,
+                                          width: 120 * uiScale, theme: theme, scale: uiScale)
+                            }
+                        }
+                    }
                 } else {
-                    BootView(denied: engine.cameraDenied) {
+                    BootView(denied: engine.cameraDenied, theme: theme) {
                         engine.start()
                         tilt.start()
                         booted = true
@@ -91,142 +137,192 @@ struct ContentView: View {
         .preferredColorScheme(.dark)
         .statusBarHidden(true)
         .sheet(isPresented: $showReport) {
-            ReportView(engine: engine, geolog: geolog)
+            ReportView(engine: engine, geolog: geolog, theme: theme)
         }
-        .sheet(isPresented: $showAdv) {
-            AdvPanel(engine: engine)
+        .sheet(isPresented: $showSettings) {
+            SettingsView(engine: engine, geolog: geolog, showRadar: $showRadar,
+                         themeRaw: $themeRaw, uiScale: $uiScale)
         }
     }
 
-    // MARK: superposición de UI
+    // MARK: superposición mínima
 
     @ViewBuilder
     private func overlayUI(size: CGSize) -> some View {
         VStack(spacing: 0) {
-            HStack(alignment: .top) {
-                TelemetryBlock(engine: engine, geolog: geolog, tilt: tilt)
-                Spacer()
-                if engine.showMags {
-                    MagWindow(engine: engine,
-                              track: lockedTrack,
-                              title: "LOCK-STABLE // RGB CROP [BIG]",
-                              placeholder: engine.autolock ? "AUTOLOCK: SEARCHING" : "AIM + CAPTURE",
-                              width: 158)
-                }
-            }
-            .padding(.horizontal, 8)
-            .padding(.top, 4)
-
-            if engine.showMags {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        ForEach(Array(sideTracks.prefix(2))) { t in
-                            MagWindow(engine: engine, track: t,
-                                      title: "AUTO MAG-TRACK // TRACK-\(CameraEngine.pad(t.id))",
-                                      placeholder: nil, width: 118)
-                        }
+            // línea de estado — tócala para expandir telemetría
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { showTelemetry.toggle() }
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(engine.hud.lock != nil ? theme : .clear)
+                            .stroke(theme, lineWidth: 1)
+                            .frame(width: 7, height: 7)
+                        Text(statusLine)
+                            .lineLimit(1)
                     }
-                    Spacer()
-                    VStack(alignment: .trailing, spacing: 10) {
-                        ForEach(Array(sideTracks.dropFirst(2).prefix(1))) { t in
-                            MagWindow(engine: engine, track: t,
-                                      title: "AUTO MAG-TRACK // TRACK-\(CameraEngine.pad(t.id))",
-                                      placeholder: nil, width: 118)
-                        }
-                    }
+                    if showTelemetry { telemetryDetail }
                 }
-                .padding(.horizontal, 8)
-                .padding(.top, 12)
+                .font(.system(size: 10 * uiScale, design: .monospaced))
+                .foregroundStyle(theme)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(.black.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
             }
+            .padding(.top, 6)
 
             Spacer()
 
             HStack(alignment: .bottom) {
-                if geolog.active { GeologBox(geolog: geolog) }
+                if geolog.active { GeologBox(geolog: geolog, theme: theme, scale: uiScale) }
                 Spacer()
-                if showRadar { RadarView(hud: engine.hud) }
+                if showRadar { RadarView(hud: engine.hud, theme: theme) }
             }
-            .padding(.horizontal, 8)
-            .padding(.bottom, 4)
-
-            HStack(spacing: 6) {
-                BigButton(title: "MAKE\nREPORT") { showReport = true }
-                BigButton(title: "TELEMETRY\nMINIMAP", active: showRadar) { showRadar.toggle() }
-                BigButton(title: "GEOLOG\nPANEL", active: geolog.active) { geolog.toggle() }
-                BigButton(title: "ADV", tint: .sigAmber) { showAdv = true }
-                    .frame(width: 64)
-            }
-            .padding(.horizontal, 8)
+            .padding(.horizontal, 10)
             .padding(.bottom, 6)
+
+            // barra mínima
+            HStack(spacing: 8) {
+                GhostButton(title: "REPORT", theme: theme, scale: uiScale) { showReport = true }
+                GhostButton(title: "SNAP", theme: theme, scale: uiScale) { engine.snapClassify() }
+                GhostButton(title: "UNLOCK", theme: theme, scale: uiScale) { engine.unlock() }
+                GhostButton(title: "⚙", theme: theme, scale: uiScale) { showSettings = true }
+                    .frame(width: 46 * uiScale)
+            }
+            .padding(.horizontal, 10)
+            .padding(.bottom, 8)
         }
     }
 
-    private var lockedTrack: TrackBox? {
-        guard let id = engine.hud.lockId else { return nil }
-        return engine.hud.tracks.first { $0.id == id }
+    private var statusLine: String {
+        let h = engine.hud
+        return "CYBEREYE · \(h.status) · TRK \(h.tracks.count) · \(h.fps)FPS"
     }
 
-    private var sideTracks: [TrackBox] {
-        engine.hud.tracks
-            .filter { $0.id != engine.hud.lockId && $0.age >= 8 }
-            .sorted { $0.area > $1.area }
+    private var telemetryDetail: some View {
+        let h = engine.hud
+        func deg(_ v: Double?) -> String { v.map { String(format: "%.0f°", $0) } ?? "--" }
+        let gps = geolog.fix.map {
+            String(format: "GPS %.5f, %.5f", $0.coordinate.latitude, $0.coordinate.longitude)
+        } ?? "GPS OFF"
+        return VStack(alignment: .leading, spacing: 1) {
+            Text("FRM \(h.frames)  MOTION \(h.motionSamples)")
+            Text("TRACKS ÚNICOS \(h.uniqueTracks)  MAX \(Int(engine.maxPoints))")
+            Text("HDG \(deg(tilt.heading))  PITCH \(deg(tilt.pitch))  ROLL \(deg(tilt.roll))")
+            Text(gps)
+            Text("PROCESAMIENTO 100% EN EL DISPOSITIVO")
+        }
+        .padding(.top, 3)
+        .opacity(0.85)
     }
 }
 
-// MARK: - Pantalla de arranque
+// MARK: - Panel flotante (arrastrar + pellizcar)
 
-struct BootView: View {
-    let denied: Bool
-    let onStart: () -> Void
+struct FloatingPanel<Content: View>: View {
+    @State private var position: CGPoint
+    @State private var scale: CGFloat = 1
+    @State private var baseScale: CGFloat = 1
+    @GestureState private var dragDelta: CGSize = .zero
+    private let content: () -> Content
 
-    private let lines = [
-        "CYBEREYE // EXPERIMENTAL SENSOR SUITE",
-        "native iOS build V1.0",
-        "",
-        "[ OK ] micro-motion detector ...... armed",
-        "[ OK ] kalman track core .......... armed",
-        "[ OK ] auto mag-track windows ..... armed",
-        "[ OK ] autolock engine ............ armed",
-        "[ OK ] neural snap-tagger ......... on-device",
-        "",
-        "SEGURIDAD: todo se procesa en este iPhone.",
-        "El video nunca sale del dispositivo.",
-        "Sin cuentas, sin rastreo, sin servidores.",
-        "GPS apagado por defecto (botón GEOLOG).",
-    ]
-
-    @State private var visible = 0
-    private let bootTimer = Timer.publish(every: 0.09, on: .main, in: .common).autoconnect()
+    init(initial: CGPoint, @ViewBuilder content: @escaping () -> Content) {
+        _position = State(initialValue: initial)
+        self.content = content
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            Text(lines.prefix(visible).joined(separator: "\n"))
-                .font(.system(size: 12, design: .monospaced))
-                .foregroundStyle(Color.sigGreen)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            if visible >= lines.count {
-                Button(action: onStart) {
-                    Text("▸ INITIALIZE SENSOR")
-                        .font(.system(size: 14, design: .monospaced))
-                        .tracking(2)
-                        .foregroundStyle(Color.sigGreen)
-                        .padding(.vertical, 14)
-                        .padding(.horizontal, 26)
-                        .overlay(Rectangle().stroke(Color.sigGreen, lineWidth: 1))
+        content()
+            .scaleEffect(scale)
+            .position(x: position.x + dragDelta.width,
+                      y: position.y + dragDelta.height)
+            .gesture(
+                DragGesture()
+                    .updating($dragDelta) { v, s, _ in s = v.translation }
+                    .onEnded { v in
+                        position.x += v.translation.width
+                        position.y += v.translation.height
+                    }
+            )
+            .simultaneousGesture(
+                MagnificationGesture()
+                    .onChanged { m in scale = min(2.2, max(0.5, baseScale * m)) }
+                    .onEnded { _ in baseScale = scale }
+            )
+    }
+}
+
+// MARK: - Ventana MAG
+
+struct MagWindow: View {
+    let title: String
+    let image: UIImage?
+    let footer: String?
+    let width: CGFloat
+    let theme: Color
+    let scale: Double
+
+    private var height: CGFloat { width / 1.5 }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(title)
+                Spacer()
+                Text("⣿").opacity(0.5)   // asa de arrastre
+            }
+            .font(.system(size: 8 * scale, design: .monospaced))
+            .padding(.horizontal, 5).padding(.vertical, 2)
+            .background(.black.opacity(0.85))
+
+            ZStack {
+                Color.black.opacity(0.75)
+                if let img = image {
+                    Image(uiImage: img)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: width, height: height)
+                        .clipped()
                 }
+                MagReticle(theme: theme)
             }
-            if denied {
-                Text("SENSOR FAULT: permiso de cámara denegado.\nAjustes > CyberEye > Cámara > Permitir")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(Color.sigRed)
+            .frame(width: width, height: height)
+
+            if let f = footer {
+                Text(f)
+                    .font(.system(size: 7.5 * scale, design: .monospaced))
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 5).padding(.vertical, 2)
+                    .background(.black.opacity(0.85))
             }
         }
-        .padding(28)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-        .background(Color.black)
-        .onReceive(bootTimer) { _ in
-            if visible < lines.count { visible += 1 }
+        .frame(width: width)
+        .foregroundStyle(theme)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(theme.opacity(0.8), lineWidth: 1))
+        .animation(nil, value: image)
+    }
+}
+
+struct MagReticle: View {
+    let theme: Color
+
+    var body: some View {
+        Canvas { ctx, size in
+            let c = CGPoint(x: size.width / 2, y: size.height / 2)
+            let r = min(size.width, size.height) * 0.16
+            var p = Path()
+            p.addArc(center: c, radius: r, startAngle: .zero, endAngle: .degrees(360), clockwise: false)
+            p.move(to: CGPoint(x: c.x - r * 1.5, y: c.y)); p.addLine(to: CGPoint(x: c.x - r * 0.6, y: c.y))
+            p.move(to: CGPoint(x: c.x + r * 0.6, y: c.y)); p.addLine(to: CGPoint(x: c.x + r * 1.5, y: c.y))
+            p.move(to: CGPoint(x: c.x, y: c.y - r * 1.5)); p.addLine(to: CGPoint(x: c.x, y: c.y - r * 0.6))
+            p.move(to: CGPoint(x: c.x, y: c.y + r * 0.6)); p.addLine(to: CGPoint(x: c.x, y: c.y + r * 1.5))
+            ctx.stroke(p, with: .color(theme.opacity(0.8)), lineWidth: 1)
         }
+        .allowsHitTesting(false)
     }
 }
 
@@ -235,100 +331,51 @@ struct BootView: View {
 struct HUDCanvas: View {
     let hud: HUDState
     let viewSize: CGSize
+    let theme: Color
+    let scale: Double
 
     var body: some View {
         Canvas { ctx, size in
             let map = CoverMap(buffer: hud.bufferSize, view: size)
-            let green = Color.sigGreen
 
-            // puntos de movimiento
+            // puntos de movimiento — sutiles
             for s in hud.speckles {
-                let p = map.point(s)
-                ctx.fill(Path(CGRect(x: p.x - 1, y: p.y - 1, width: 2.4, height: 2.4)),
-                         with: .color(green.opacity(0.55)))
+                let p = map.toView(s)
+                ctx.fill(Path(CGRect(x: p.x - 1, y: p.y - 1, width: 2, height: 2)),
+                         with: .color(theme.opacity(0.3)))
             }
 
-            // retícula central
-            let c = CGPoint(x: size.width / 2, y: size.height / 2)
-            let locked = hud.lockId != nil
-            var ret = Path()
-            ret.addArc(center: c, radius: 44, startAngle: .zero, endAngle: .degrees(360), clockwise: false)
-            ctx.stroke(ret, with: .color(locked ? green : green.opacity(0.6)),
-                       style: StrokeStyle(lineWidth: 1, dash: locked ? [] : [5, 5]))
-            var cross = Path()
-            cross.move(to: CGPoint(x: c.x - 62, y: c.y)); cross.addLine(to: CGPoint(x: c.x - 26, y: c.y))
-            cross.move(to: CGPoint(x: c.x + 26, y: c.y)); cross.addLine(to: CGPoint(x: c.x + 62, y: c.y))
-            cross.move(to: CGPoint(x: c.x, y: c.y - 62)); cross.addLine(to: CGPoint(x: c.x, y: c.y - 26))
-            cross.move(to: CGPoint(x: c.x, y: c.y + 26)); cross.addLine(to: CGPoint(x: c.x, y: c.y + 62))
-            ctx.stroke(cross, with: .color(green.opacity(0.7)), lineWidth: 1)
-
-            // cajas de rastreo
-            for t in hud.tracks {
-                let p = map.point(t.pos)
-                let w = max(30, t.size.width * map.scale)
-                let h = max(30, t.size.height * map.scale)
-                let isLock = t.id == hud.lockId
-                let col: Color = isLock ? .sigCyan : (t.age < 4 ? green.opacity(0.4) : green.opacity(0.85))
+            // cajas de movimiento — solo esquinas, sin texto (limpio)
+            for t in hud.tracks where t.age >= 8 {
+                let p = map.toView(t.pos)
+                let w = max(34, t.size.width * map.scale)
+                let h = max(34, t.size.height * map.scale)
                 let rect = CGRect(x: p.x - w / 2, y: p.y - h / 2, width: w, height: h)
-                ctx.stroke(cornerPath(rect), with: .color(col), lineWidth: isLock ? 2 : 1)
-
-                if t.trail.count > 2 {
-                    var trail = Path()
-                    trail.move(to: map.point(t.trail[0]))
-                    for q in t.trail.dropFirst() { trail.addLine(to: map.point(q)) }
-                    ctx.stroke(trail, with: .color(Color.sigCyan.opacity(0.5)), lineWidth: 1)
-                }
-
-                let tag = t.label.map { "\($0) \(Int(t.conf * 100))%" } ?? "TRACK-\(CameraEngine.pad(t.id))"
-                ctx.draw(Text(isLock ? "LOCK \(tag)" : tag)
-                            .font(.system(size: 9, design: .monospaced))
-                            .foregroundStyle(col),
-                         at: CGPoint(x: rect.minX, y: rect.minY - 8), anchor: .leading)
+                ctx.stroke(cornerPath(rect), with: .color(theme.opacity(0.55)), lineWidth: 1)
             }
 
-            // fantasma de memoria
-            if let m = hud.memory {
-                let p = map.point(m.pos)
-                let rect = CGRect(x: p.x - 20, y: p.y - 20, width: 40, height: 40)
-                ctx.stroke(Path(rect), with: .color(.sigAmber),
-                           style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                ctx.draw(Text("MEMORY").font(.system(size: 9, design: .monospaced))
-                            .foregroundStyle(Color.sigAmber),
-                         at: CGPoint(x: rect.minX, y: rect.minY - 8), anchor: .leading)
-            }
-
-            // líneas conectoras amarillas hacia las ventanas MAG (esquinas)
-            let anchors = [
-                CGPoint(x: size.width - 90, y: 110),   // lock, arriba derecha
-                CGPoint(x: 70, y: 230),                // track 1, arriba izquierda
-                CGPoint(x: 70, y: 340),                // track 2
-                CGPoint(x: size.width - 70, y: 340),   // track 3, derecha
-            ]
-            var lineIdx = 0
-            if let id = hud.lockId, let t = hud.tracks.first(where: { $0.id == id }) {
-                connector(ctx, from: map.point(t.pos), to: anchors[0])
-                lineIdx = 1
-            }
-            let side = hud.tracks
-                .filter { $0.id != hud.lockId && $0.age >= 8 }
-                .sorted { $0.area > $1.area }
-                .prefix(3)
-            for t in side {
-                if lineIdx >= anchors.count { break }
-                connector(ctx, from: map.point(t.pos), to: anchors[lineIdx])
-                lineIdx += 1
+            // objetivo fijado — caja completa + etiqueta
+            if let lock = hud.lock {
+                let p = map.toView(lock.pos)
+                let w = max(46, lock.size.width * map.scale)
+                let h = max(46, lock.size.height * map.scale)
+                let rect = CGRect(x: p.x - w / 2, y: p.y - h / 2, width: w, height: h)
+                ctx.stroke(cornerPath(rect), with: .color(theme), lineWidth: 2)
+                var cross = Path()
+                cross.move(to: CGPoint(x: p.x - 7, y: p.y)); cross.addLine(to: CGPoint(x: p.x + 7, y: p.y))
+                cross.move(to: CGPoint(x: p.x, y: p.y - 7)); cross.addLine(to: CGPoint(x: p.x, y: p.y + 7))
+                ctx.stroke(cross, with: .color(theme), lineWidth: 1)
+                let label = lock.label ?? "LOCK"
+                ctx.draw(Text("\(label) \(String(format: "%.0f%%", lock.conf * 100))")
+                            .font(.system(size: 9 * scale, design: .monospaced))
+                            .foregroundStyle(theme),
+                         at: CGPoint(x: rect.minX, y: rect.minY - 9), anchor: .leading)
             }
         }
     }
 
-    private func connector(_ ctx: GraphicsContext, from: CGPoint, to: CGPoint) {
-        var p = Path()
-        p.move(to: from); p.addLine(to: to)
-        ctx.stroke(p, with: .color(Color.yellow.opacity(0.5)), lineWidth: 1)
-    }
-
     private func cornerPath(_ r: CGRect) -> Path {
-        let l = min(14, r.width * 0.3)
+        let l = min(12, r.width * 0.28)
         var p = Path()
         p.move(to: CGPoint(x: r.minX, y: r.minY + l)); p.addLine(to: CGPoint(x: r.minX, y: r.minY)); p.addLine(to: CGPoint(x: r.minX + l, y: r.minY))
         p.move(to: CGPoint(x: r.maxX - l, y: r.minY)); p.addLine(to: CGPoint(x: r.maxX, y: r.minY)); p.addLine(to: CGPoint(x: r.maxX, y: r.minY + l))
@@ -338,119 +385,25 @@ struct HUDCanvas: View {
     }
 }
 
-// MARK: - Bloque de telemetría
+// MARK: - Botones fantasma
 
-struct TelemetryBlock: View {
-    @ObservedObject var engine: CameraEngine
-    @ObservedObject var geolog: GeologManager
-    @ObservedObject var tilt: TiltManager
-
-    private func deg(_ v: Double?) -> String { v.map { String(format: "%.0f°", $0) } ?? "--" }
-
-    var body: some View {
-        let hud = engine.hud
-        let lockLine: String = {
-            if let id = hud.lockId, let t = hud.tracks.first(where: { $0.id == id }) {
-                return "X\(Int(t.pos.x)) Y\(Int(t.pos.y)) A\(t.area)"
-            }
-            return "NONE"
-        }()
-        let gpsLine = geolog.fix.map {
-            String(format: "GPS: %.5f, %.5f", $0.coordinate.latitude, $0.coordinate.longitude)
-        } ?? "GPS: OFF"
-
-        VStack(alignment: .leading, spacing: 1) {
-            Text("CYBEREYE // EXPERIMENTAL SENSOR SUITE")
-            Text("THRESH: \(Int(engine.sensitivity))  MIN AREA: \(Int(engine.minArea))  POINTS: \(hud.tracks.count)/\(Int(engine.maxPoints))")
-            Text("LOCK: \(lockLine)")
-            Text("HDG:\(deg(tilt.heading)) PITCH:\(deg(tilt.pitch)) ROLL:\(deg(tilt.roll))")
-            Text("FPS:\(hud.fps)  FRM:\(hud.frames)  AUTOLOCK:\(engine.autolock ? "ON" : "OFF")")
-            Text("\(gpsLine)  TAG: \(hud.tag)")
-            Text("UPLINK: NONE · ON-DEVICE ONLY")
-            Text(hud.status)
-                .foregroundStyle(hud.statusIsAlert ? Color.sigAmber : Color.sigGreen)
-                .padding(.top, 3)
-        }
-        .font(.system(size: 8.5, design: .monospaced))
-        .foregroundStyle(Color.sigGreen)
-        .padding(6)
-        .background(Color(red: 0, green: 0.05, blue: 0.02).opacity(0.55))
-        .overlay(Rectangle().stroke(Color.sigGreen.opacity(0.2), lineWidth: 1))
-    }
-}
-
-// MARK: - Ventana MAG-TRACK
-
-struct MagWindow: View {
-    @ObservedObject var engine: CameraEngine
-    let track: TrackBox?
+struct GhostButton: View {
     let title: String
-    let placeholder: String?
-    let width: CGFloat
-
-    private var height: CGFloat { width * 0.67 }
-
-    private var image: UIImage? {
-        track.flatMap { engine.magImages[$0.id] }
-    }
+    let theme: Color
+    let scale: Double
+    let action: () -> Void
 
     var body: some View {
-        if track != nil || placeholder != nil {
-            VStack(spacing: 0) {
-                Text(title)
-                    .font(.system(size: 7, design: .monospaced))
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 3).padding(.vertical, 1)
-                    .background(Color(red: 0, green: 0.1, blue: 0.04).opacity(0.92))
-                ZStack {
-                    Color(red: 0, green: 0.06, blue: 0.02)
-                    if let img = image, track != nil {
-                        Image(uiImage: img).resizable().scaledToFill()
-                            .frame(width: width, height: height).clipped()
-                        MagReticle()
-                    } else if let ph = placeholder {
-                        Text(ph)
-                            .font(.system(size: 8, design: .monospaced))
-                            .foregroundStyle(Color.sigGreen.opacity(0.6))
-                    }
-                }
-                .frame(width: width, height: height)
-                Text(footer)
-                    .font(.system(size: 7, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.85))
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 3).padding(.vertical, 1)
-                    .background(Color(red: 0, green: 0.1, blue: 0.04).opacity(0.92))
-            }
-            .frame(width: width)
-            .foregroundStyle(Color.sigGreen)
-            .overlay(Rectangle().stroke(Color.sigGreen, lineWidth: 1))
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 10 * scale, design: .monospaced))
+                .tracking(1)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10 * scale)
+                .foregroundStyle(theme)
+                .background(.black.opacity(0.4), in: Capsule())
+                .overlay(Capsule().stroke(theme.opacity(0.5), lineWidth: 1))
         }
-    }
-
-    private var footer: String {
-        guard let t = track else { return "SEARCHING…" }
-        let tag = t.label.map { "  \($0)" } ?? ""
-        return "X\(Int(t.pos.x)) Y\(Int(t.pos.y)) A\(t.area)  Z:2.0x\(tag)"
-    }
-}
-
-struct MagReticle: View {
-    var body: some View {
-        Canvas { ctx, size in
-            let c = CGPoint(x: size.width / 2, y: size.height / 2)
-            let r = min(size.width, size.height) * 0.18
-            var p = Path()
-            p.addArc(center: c, radius: r, startAngle: .zero, endAngle: .degrees(360), clockwise: false)
-            p.move(to: CGPoint(x: c.x - r * 1.6, y: c.y)); p.addLine(to: CGPoint(x: c.x - r * 0.6, y: c.y))
-            p.move(to: CGPoint(x: c.x + r * 0.6, y: c.y)); p.addLine(to: CGPoint(x: c.x + r * 1.6, y: c.y))
-            p.move(to: CGPoint(x: c.x, y: c.y - r * 1.6)); p.addLine(to: CGPoint(x: c.x, y: c.y - r * 0.6))
-            p.move(to: CGPoint(x: c.x, y: c.y + r * 0.6)); p.addLine(to: CGPoint(x: c.x, y: c.y + r * 1.6))
-            ctx.stroke(p, with: .color(Color.sigGreen.opacity(0.85)), lineWidth: 1.5)
-        }
-        .allowsHitTesting(false)
     }
 }
 
@@ -458,41 +411,42 @@ struct MagReticle: View {
 
 struct RadarView: View {
     let hud: HUDState
+    let theme: Color
 
     var body: some View {
-        VStack(spacing: 2) {
-            TimelineView(.animation) { timeline in
-                Canvas { ctx, size in
-                    let r = min(size.width, size.height) / 2
-                    let c = CGPoint(x: r, y: r)
-                    for rr in [r - 1, r * 0.66, r * 0.33] {
-                        var p = Path()
-                        p.addArc(center: c, radius: rr, startAngle: .zero, endAngle: .degrees(360), clockwise: false)
-                        ctx.stroke(p, with: .color(Color.sigGreen.opacity(0.5)), lineWidth: 1)
-                    }
-                    let t = timeline.date.timeIntervalSinceReferenceDate
-                    let ang = CGFloat(t.truncatingRemainder(dividingBy: 4) / 4 * 2 * Double.pi)
-                    var sweep = Path()
-                    sweep.move(to: c)
-                    sweep.addLine(to: CGPoint(x: c.x + cos(ang) * r, y: c.y + sin(ang) * r))
-                    ctx.stroke(sweep, with: .color(Color.sigGreen.opacity(0.35)), lineWidth: 2)
-                    for tr in hud.tracks {
-                        let bx = c.x + (tr.pos.x / max(hud.bufferSize.width, 1) - 0.5) * 2 * r * 0.9
-                        let by = c.y + (tr.pos.y / max(hud.bufferSize.height, 1) - 0.5) * 2 * r * 0.9
-                        let isLock = tr.id == hud.lockId
-                        ctx.fill(Path(ellipseIn: CGRect(x: bx - 2, y: by - 2, width: isLock ? 6 : 4, height: isLock ? 6 : 4)),
-                                 with: .color(isLock ? Color.sigAmber : Color.sigGreen))
-                    }
+        TimelineView(.animation) { timeline in
+            Canvas { ctx, size in
+                let r = min(size.width, size.height) / 2
+                let c = CGPoint(x: r, y: r)
+                for rr in [r - 1, r * 0.6] {
+                    var p = Path()
+                    p.addArc(center: c, radius: rr, startAngle: .zero, endAngle: .degrees(360), clockwise: false)
+                    ctx.stroke(p, with: .color(theme.opacity(0.4)), lineWidth: 1)
+                }
+                let t = timeline.date.timeIntervalSinceReferenceDate
+                let ang = CGFloat(t.truncatingRemainder(dividingBy: 4) / 4 * 2 * Double.pi)
+                var sweep = Path()
+                sweep.move(to: c)
+                sweep.addLine(to: CGPoint(x: c.x + cos(ang) * r, y: c.y + sin(ang) * r))
+                ctx.stroke(sweep, with: .color(theme.opacity(0.3)), lineWidth: 1.5)
+                for tr in hud.tracks {
+                    let bx = c.x + (tr.pos.x / max(hud.bufferSize.width, 1) - 0.5) * 2 * r * 0.85
+                    let by = c.y + (tr.pos.y / max(hud.bufferSize.height, 1) - 0.5) * 2 * r * 0.85
+                    ctx.fill(Path(ellipseIn: CGRect(x: bx - 1.5, y: by - 1.5, width: 3, height: 3)),
+                             with: .color(theme))
+                }
+                if let lock = hud.lock {
+                    let bx = c.x + (lock.pos.x / max(hud.bufferSize.width, 1) - 0.5) * 2 * r * 0.85
+                    let by = c.y + (lock.pos.y / max(hud.bufferSize.height, 1) - 0.5) * 2 * r * 0.85
+                    ctx.fill(Path(ellipseIn: CGRect(x: bx - 2.5, y: by - 2.5, width: 5, height: 5)),
+                             with: .color(.white))
                 }
             }
-            .frame(width: 108, height: 108)
-            .background(Color(red: 0, green: 0.06, blue: 0.02).opacity(0.8))
-            .clipShape(Circle())
-            .overlay(Circle().stroke(Color.sigGreen.opacity(0.35), lineWidth: 1))
-            Text("RADAR · BLIPS \(hud.tracks.count)")
-                .font(.system(size: 8, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.85))
         }
+        .frame(width: 84, height: 84)
+        .background(.black.opacity(0.5))
+        .clipShape(Circle())
+        .overlay(Circle().stroke(theme.opacity(0.35), lineWidth: 1))
     }
 }
 
@@ -500,98 +454,142 @@ struct RadarView: View {
 
 struct GeologBox: View {
     @ObservedObject var geolog: GeologManager
+    let theme: Color
+    let scale: Double
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("GEOLOG PANEL").foregroundStyle(Color.sigGreen)
+            Text("GEOLOG").foregroundStyle(theme)
             if geolog.denied {
-                Text("GPS: DENEGADO").foregroundStyle(Color.sigRed)
+                Text("GPS DENEGADO").foregroundStyle(.red)
             } else if let f = geolog.fix {
-                Text(String(format: "LAT %.5f", f.coordinate.latitude))
-                Text(String(format: "LON %.5f", f.coordinate.longitude))
-                Text(String(format: "ALT %.0fm  ACC ±%.0fm", f.altitude, f.horizontalAccuracy))
+                Text(String(format: "%.5f, %.5f", f.coordinate.latitude, f.coordinate.longitude))
+                Text(String(format: "ALT %.0fm ±%.0fm", f.altitude, f.horizontalAccuracy))
             } else {
-                Text("ESPERANDO FIX…")
+                Text("BUSCANDO…")
             }
         }
-        .font(.system(size: 8.5, design: .monospaced))
+        .font(.system(size: 8.5 * scale, design: .monospaced))
         .foregroundStyle(.white.opacity(0.9))
-        .padding(6)
-        .background(Color(red: 0, green: 0.08, blue: 0.03).opacity(0.82))
-        .overlay(Rectangle().stroke(Color.sigGreen.opacity(0.35), lineWidth: 1))
+        .padding(7)
+        .background(.black.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(theme.opacity(0.35), lineWidth: 1))
     }
 }
 
-// MARK: - Botones
+// MARK: - Arranque
 
-struct BigButton: View {
-    let title: String
-    var active = false
-    var tint: Color = .sigGreen
-    let action: () -> Void
+struct BootView: View {
+    let denied: Bool
+    let theme: Color
+    let onStart: () -> Void
 
     var body: some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: 10, design: .monospaced))
-                .tracking(0.8)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 12)
-                .foregroundStyle(tint)
-                .background(active ? tint.opacity(0.16) : Color(red: 0, green: 0.16, blue: 0.06).opacity(0.8))
-                .overlay(Rectangle().stroke(active ? tint : tint.opacity(0.4), lineWidth: 1))
+        VStack(alignment: .leading, spacing: 22) {
+            Text("CYBEREYE")
+                .font(.system(size: 26, design: .monospaced))
+                .tracking(6)
+            Text("Rastreo visual en tiempo real.\nTodo se procesa en este iPhone —\nel video nunca sale del dispositivo.\nGPS apagado por defecto.")
+                .font(.system(size: 12, design: .monospaced))
+                .opacity(0.8)
+            Button(action: onStart) {
+                Text("▸ INICIAR")
+                    .font(.system(size: 14, design: .monospaced))
+                    .tracking(3)
+                    .padding(.vertical, 13)
+                    .padding(.horizontal, 30)
+                    .overlay(Capsule().stroke(theme, lineWidth: 1))
+            }
+            if denied {
+                Text("Permiso de cámara denegado.\nAjustes > CyberEye > Cámara > Permitir")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.red)
+            }
         }
+        .foregroundStyle(theme)
+        .padding(30)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .background(Color.black)
     }
 }
 
-// MARK: - Panel avanzado
+// MARK: - Ajustes
 
-struct AdvPanel: View {
+struct SettingsView: View {
     @ObservedObject var engine: CameraEngine
+    @ObservedObject var geolog: GeologManager
+    @Binding var showRadar: Bool
+    @Binding var themeRaw: String
+    @Binding var uiScale: Double
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("OBJETIVO") {
-                    Button("CAPTURE RETICLE — fijar lo que esté en la mira") { engine.captureFromReticle(); dismiss() }
-                    Button("SNAP — etiquetar objetivo con IA (en el iPhone)") { engine.snapClassify(); dismiss() }
-                    Button("UNLOCK TARGET", role: .destructive) { engine.unlock(); dismiss() }
-                    Toggle("AUTOLOCK (rastreo automático)", isOn: $engine.autolock)
+                Section("COLOR DE LA INTERFAZ") {
+                    HStack(spacing: 14) {
+                        ForEach(ThemeChoice.allCases) { choice in
+                            Button {
+                                themeRaw = choice.rawValue
+                            } label: {
+                                Circle()
+                                    .fill(choice.color)
+                                    .frame(width: 32, height: 32)
+                                    .overlay(
+                                        Circle().stroke(.white,
+                                                        lineWidth: themeRaw == choice.rawValue ? 2 : 0)
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.vertical, 4)
                 }
-                Section("VISUAL") {
-                    Toggle("Puntos de movimiento (speckle)", isOn: $engine.showSpeckle)
-                    Toggle("Ventanas MAG-TRACK", isOn: $engine.showMags)
-                    Toggle("UFO SCAN (alta sensibilidad cielo)", isOn: $engine.ufoMode)
-                }
-                Section("SENSOR") {
+                Section("TAMAÑO") {
                     VStack(alignment: .leading) {
-                        Text("THRESH / SENS: \(Int(engine.sensitivity))")
+                        Text("Escala de la interfaz: \(String(format: "%.1f", uiScale))x")
+                        Slider(value: $uiScale, in: 0.8...1.5, step: 0.1)
+                    }
+                    Text("Las ventanas MAG se mueven arrastrándolas y se escalan pellizcándolas.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                Section("VENTANAS") {
+                    Stepper("Ventanas MAG extra: \(engine.extraWindows)",
+                            value: $engine.extraWindows, in: 0...3)
+                    Toggle("Radar", isOn: $showRadar)
+                    Toggle("Puntos de movimiento", isOn: $engine.showSpeckle)
+                }
+                Section("RASTREO") {
+                    Toggle("Autolock (fija objetivos solo)", isOn: $engine.autolock)
+                    Toggle("Modo cielo / alta sensibilidad", isOn: $engine.ufoMode)
+                    VStack(alignment: .leading) {
+                        Text("Sensibilidad: \(Int(engine.sensitivity))")
                         Slider(value: $engine.sensitivity, in: 8...80, step: 1)
                     }
                     VStack(alignment: .leading) {
-                        Text("MIN MOTION AREA: \(Int(engine.minArea))")
+                        Text("Área mínima: \(Int(engine.minArea))")
                         Slider(value: $engine.minArea, in: 1...120, step: 1)
                     }
                     VStack(alignment: .leading) {
-                        Text("MAX POINTS: \(Int(engine.maxPoints))")
-                        Slider(value: $engine.maxPoints, in: 1...24, step: 1)
+                        Text("Máx. objetivos: \(Int(engine.maxPoints))")
+                        Slider(value: $engine.maxPoints, in: 1...20, step: 1)
                     }
-                    VStack(alignment: .leading) {
-                        Text("LOCK SEARCH RADIUS: \(Int(engine.lockRadius))")
-                        Slider(value: $engine.lockRadius, in: 60...400, step: 10)
-                    }
+                    Text("Consejo: también puedes tocar cualquier cosa en pantalla para fijarla, aunque no se mueva.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                Section("GEOLOG") {
+                    Toggle("GPS en telemetría", isOn: Binding(
+                        get: { geolog.active },
+                        set: { _ in geolog.toggle() }))
                 }
                 Section {
-                    Text("Todo el procesamiento ocurre en tu iPhone. El video nunca sale del dispositivo.")
+                    Text("Privacidad: todo el procesamiento ocurre en tu iPhone. El video nunca sale del dispositivo. Sin cuentas, sin rastreo, sin internet.")
                         .font(.footnote)
                 }
             }
-            .font(.system(.body, design: .monospaced))
-            .navigationTitle("ADV PANEL")
+            .navigationTitle("Ajustes")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { Button("CERRAR") { dismiss() } }
+            .toolbar { Button("Listo") { dismiss() } }
         }
         .preferredColorScheme(.dark)
     }
@@ -602,6 +600,7 @@ struct AdvPanel: View {
 struct ReportView: View {
     @ObservedObject var engine: CameraEngine
     @ObservedObject var geolog: GeologManager
+    let theme: Color
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -610,34 +609,33 @@ struct ReportView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     let hud = engine.hud
                     Group {
-                        Text("OP REPORT  GENERATED \(Date().formatted(date: .abbreviated, time: .standard))")
-                        Text("CYBEREYE-CLASS OPERATION SURVEILLANCE REPORT")
-                        Text("────────────────────────────")
-                        Text("FRAME SAMPLES: \(hud.frames)")
-                        Text("MOTION SAMPLES TOTAL: \(hud.motionSamples)")
-                        Text("ACTIVE TRACKS: \(hud.tracks.count)")
-                        Text("UNIQUE TRACKS ISSUED: \(hud.uniqueTracks)")
-                        Text("LOCK STATE: \(hud.lockId.map { "ENGAGED · TRK-\(CameraEngine.pad($0))" } ?? "NONE")")
-                        Text("SNAP TAG: \(hud.tag)")
-                        Text(geolog.fix.map { String(format: "GPS: %.5f, %.5f", $0.coordinate.latitude, $0.coordinate.longitude) } ?? "GPS: OFF (privacidad)")
-                        Text("DATA RETENTION: NONE · ALL ON-DEVICE")
+                        Text("CYBEREYE // UNIQUE-TRACK REPORT")
+                        Text("GENERADO \(Date().formatted(date: .abbreviated, time: .standard))")
+                        Text("──────────────────────────")
+                        Text("CUADROS: \(hud.frames)")
+                        Text("MUESTRAS DE MOVIMIENTO: \(hud.motionSamples)")
+                        Text("TRACKS ACTIVOS: \(hud.tracks.count)")
+                        Text("TRACKS ÚNICOS: \(hud.uniqueTracks)")
+                        Text("LOCK: \(hud.lock != nil ? "ACTIVO" : "NINGUNO")\(hud.lock?.label.map { " · \($0)" } ?? "")")
+                        Text(geolog.fix.map { String(format: "GPS: %.5f, %.5f", $0.coordinate.latitude, $0.coordinate.longitude) } ?? "GPS: OFF")
+                        Text("RETENCIÓN DE DATOS: NINGUNA · TODO EN EL DISPOSITIVO")
                     }
-                    Text("────────────────────────────")
-                    Text("UNIQUE-TRACK EVENT LOG (latest first):").padding(.bottom, 4)
+                    Text("──────────────────────────")
+                    Text("EVENTOS (recientes primero):").padding(.bottom, 4)
                     ForEach(engine.events.reversed()) { ev in
                         Text("\(ev.time)  \(ev.text)")
-                            .foregroundStyle(ev.highlight ? Color.sigCyan : Color.sigGreen)
+                            .opacity(ev.highlight ? 1 : 0.75)
                     }
                 }
                 .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(Color.sigGreen)
+                .foregroundStyle(theme)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding()
             }
             .background(Color.black)
-            .navigationTitle("UNIQUE-TRACK REPORT")
+            .navigationTitle("Reporte")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { Button("CLOSE") { dismiss() } }
+            .toolbar { Button("Cerrar") { dismiss() } }
         }
         .preferredColorScheme(.dark)
     }
