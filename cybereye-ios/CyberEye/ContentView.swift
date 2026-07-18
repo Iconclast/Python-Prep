@@ -87,6 +87,7 @@ struct ContentView: View {
     @State private var showSettings = false
     @State private var showTelemetry = false
     @State private var showRadar = false
+    @State private var pinchStartZoom: CGFloat? = nil
 
     private var theme: Color { (ThemeChoice(rawValue: themeRaw) ?? .verde).color }
 
@@ -98,13 +99,22 @@ struct ContentView: View {
                     CameraPreview(session: engine.session).ignoresSafeArea()
 
                     HUDCanvas(hud: engine.hud, viewSize: geo.size,
-                              theme: theme, scale: uiScale)
+                              theme: theme, scale: uiScale,
+                              showUnlabeled: engine.showUnlabeled)
                         .ignoresSafeArea()
                         .contentShape(Rectangle())
                         .gesture(SpatialTapGesture().onEnded { v in
                             let map = CoverMap(buffer: engine.hud.bufferSize, view: geo.size)
                             engine.lockAt(bufferPoint: map.toBuffer(v.location))
                         })
+                        .simultaneousGesture(
+                            MagnificationGesture()
+                                .onChanged { m in
+                                    if pinchStartZoom == nil { pinchStartZoom = engine.displayZoom }
+                                    engine.setZoom(display: (pinchStartZoom ?? 1) * m, ramp: false)
+                                }
+                                .onEnded { _ in pinchStartZoom = nil }
+                        )
 
                     overlayUI(size: geo.size)
 
@@ -183,6 +193,27 @@ struct ContentView: View {
             .padding(.horizontal, 10)
             .padding(.bottom, 6)
 
+            // selector de lente / zoom (como la app de cámara)
+            HStack(spacing: 10) {
+                ForEach(engine.lensOptions, id: \.self) { lens in
+                    Button {
+                        engine.setZoom(display: lens, ramp: true)
+                    } label: {
+                        Text(lensLabel(lens))
+                            .font(.system(size: 10 * uiScale, design: .monospaced))
+                            .frame(width: 38 * uiScale, height: 38 * uiScale)
+                            .foregroundStyle(isCurrentLens(lens) ? .black : theme)
+                            .background(isCurrentLens(lens) ? theme : .black.opacity(0.45),
+                                        in: Circle())
+                            .overlay(Circle().stroke(theme.opacity(0.5), lineWidth: 1))
+                    }
+                }
+                Text(String(format: "%.1fx", Double(engine.displayZoom)))
+                    .font(.system(size: 10 * uiScale, design: .monospaced))
+                    .foregroundStyle(theme.opacity(0.8))
+            }
+            .padding(.bottom, 8)
+
             // barra mínima
             HStack(spacing: 8) {
                 GhostButton(title: "REPORT", theme: theme, scale: uiScale) { showReport = true }
@@ -199,6 +230,22 @@ struct ContentView: View {
     private var statusLine: String {
         let h = engine.hud
         return "CYBEREYE · \(h.status) · TRK \(h.tracks.count) · \(h.fps)FPS"
+    }
+
+    private func lensLabel(_ lens: CGFloat) -> String {
+        if lens < 1 { return ".5" }
+        let v = Double(lens)
+        return v.truncatingRemainder(dividingBy: 1) == 0
+            ? String(format: "%.0f", v)
+            : String(format: "%.1f", v)
+    }
+
+    private func isCurrentLens(_ lens: CGFloat) -> Bool {
+        // marca la lente cuyo valor está más cerca del zoom actual
+        guard let nearest = engine.lensOptions.min(by: {
+            abs($0 - engine.displayZoom) < abs($1 - engine.displayZoom)
+        }) else { return false }
+        return nearest == lens
     }
 
     private var telemetryDetail: some View {
@@ -333,6 +380,7 @@ struct HUDCanvas: View {
     let viewSize: CGSize
     let theme: Color
     let scale: Double
+    let showUnlabeled: Bool
 
     var body: some View {
         Canvas { ctx, size in
@@ -345,13 +393,28 @@ struct HUDCanvas: View {
                          with: .color(theme.opacity(0.3)))
             }
 
-            // cajas de movimiento — solo esquinas, sin texto (limpio)
-            for t in hud.tracks where t.age >= 8 {
+            // cajas identificadas — con etiqueta (PERSON 92%, CAR 63%…)
+            for t in hud.tracks where t.label != nil {
                 let p = map.toView(t.pos)
-                let w = max(34, t.size.width * map.scale)
-                let h = max(34, t.size.height * map.scale)
+                let w = max(40, t.size.width * map.scale)
+                let h = max(40, t.size.height * map.scale)
                 let rect = CGRect(x: p.x - w / 2, y: p.y - h / 2, width: w, height: h)
-                ctx.stroke(cornerPath(rect), with: .color(theme.opacity(0.55)), lineWidth: 1)
+                ctx.stroke(cornerPath(rect), with: .color(theme.opacity(0.85)), lineWidth: 1.2)
+                ctx.draw(Text("\(t.label ?? "") \(Int(t.labelConf * 100))%")
+                            .font(.system(size: 9 * scale, design: .monospaced))
+                            .foregroundStyle(theme),
+                         at: CGPoint(x: rect.minX, y: rect.minY - 8), anchor: .leading)
+            }
+
+            // cajas sin identificar — solo si el usuario las quiere ver
+            if showUnlabeled {
+                for t in hud.tracks where t.label == nil && t.age >= 20 {
+                    let p = map.toView(t.pos)
+                    let w = max(34, t.size.width * map.scale)
+                    let h = max(34, t.size.height * map.scale)
+                    let rect = CGRect(x: p.x - w / 2, y: p.y - h / 2, width: w, height: h)
+                    ctx.stroke(cornerPath(rect), with: .color(theme.opacity(0.35)), lineWidth: 1)
+                }
             }
 
             // objetivo fijado — caja completa + etiqueta
@@ -558,6 +621,11 @@ struct SettingsView: View {
                             value: $engine.extraWindows, in: 0...3)
                     Toggle("Radar", isOn: $showRadar)
                     Toggle("Puntos de movimiento", isOn: $engine.showSpeckle)
+                    Toggle("Cajas sin identificar", isOn: $engine.showUnlabeled)
+                }
+                Section("ZOOM") {
+                    Text("Pellizca la pantalla para hacer zoom. Los botones .5 / 1 / \(engine.lensOptions.count > 2 ? "tele" : "2") cambian de lente, como la app de cámara.")
+                        .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("RASTREO") {
                     Toggle("Autolock (fija objetivos solo)", isOn: $engine.autolock)

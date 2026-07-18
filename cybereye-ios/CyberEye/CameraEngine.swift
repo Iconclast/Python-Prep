@@ -2,12 +2,13 @@
 //  CameraEngine.swift
 //  CyberEye
 //
-//  V2 — Rastreo real:
-//  · El objetivo fijado se sigue con VNTrackObjectRequest (el rastreador
-//    visual de Apple), suave y robusto, cuadro a cuadro.
-//  · La detección de movimiento usa fondo adaptativo + suavizado temporal
-//    (menos ruido, sin parpadeo de puntos).
-//  · Se puede fijar cualquier cosa tocándola en pantalla, se mueva o no.
+//  V3:
+//  · Zoom continuo + cambio de lente (ultra gran angular / gran angular /
+//    teleobjetivo) usando la cámara virtual del iPhone.
+//  · Reconocimiento continuo en el dispositivo: personas con
+//    VNDetectHumanRectanglesRequest y objetos (carros, animales, etc.)
+//    clasificando recortes con VNClassifyImageRequest.
+//  · El objetivo fijado se sigue con VNTrackObjectRequest.
 //  Todo 100% en el dispositivo; el video nunca sale del iPhone.
 //
 
@@ -25,6 +26,8 @@ struct TrackBox: Identifiable {
     var size: CGSize
     var area: Int
     var age: Int
+    var label: String?
+    var labelConf: Double
 }
 
 struct LockInfo {
@@ -62,6 +65,9 @@ private final class Track {
     var age = 1
     var miss = 0
     var matched = true
+    var label: String?
+    var labelConf: Double = 0
+    var labelAt: CFTimeInterval = 0
 
     init(id: Int, x: CGFloat, y: CGFloat, w: CGFloat, h: CGFloat, area: Int) {
         self.id = id; self.x = x; self.y = y; self.w = w; self.h = h; self.area = area
@@ -80,10 +86,16 @@ final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
     @Published var running = false
     @Published var magImages: [String: UIImage] = [:]
 
-    // Ajustes (panel de configuración)
+    // Zoom / lentes
+    @Published var displayZoom: CGFloat = 1
+    @Published var lensOptions: [CGFloat] = [1]
+    @Published var maxDisplayZoom: CGFloat = 8
+
+    // Ajustes
     @Published var autolock = true
-    @Published var showSpeckle = true
-    @Published var extraWindows = 1          // ventanas MAG adicionales (0–3)
+    @Published var showSpeckle = false
+    @Published var showUnlabeled = false
+    @Published var extraWindows = 1
     @Published var ufoMode = false
     @Published var sensitivity: Double = 26
     @Published var minArea: Double = 10
@@ -92,16 +104,19 @@ final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
     private let procQueue = DispatchQueue(label: "cybereye.proc")
     private let output = AVCaptureVideoDataOutput()
     private let ciContext = CIContext(options: [.cacheIntermediates: false])
+    private var device: AVCaptureDevice?
+    private var wideFactor: CGFloat = 1     // factor crudo que equivale a "1x"
 
     // Estado interno (solo en procQueue)
-    private var bg: [Float] = []             // fondo adaptativo
-    private var heat: [Float] = []           // suavizado temporal por celda
+    private var bg: [Float] = []
+    private var heat: [Float] = []
     private var procW = 0, procH = 0
     private var tracks: [Track] = []
     private var nextId = 1
     private var frameCount = 0
     private var motionTotal = 0
     private var frameToggle = false
+    private var visionTick = 0
     private var fpsCounter = 0
     private var fpsStamp = CACurrentMediaTime()
     private var fpsValue = 0
@@ -122,6 +137,15 @@ final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
     private var latestBuffer: CVPixelBuffer?
     private var magTimer: Timer?
 
+    // Etiquetas de contexto que no aportan (se ignoran al clasificar)
+    private let labelBlocklist: Set<String> = [
+        "outdoor", "indoor", "structure", "sky", "cloud", "plant", "tree", "grass",
+        "road", "street", "building", "wall", "floor", "ground", "daytime", "night",
+        "landscape", "field", "urban", "city", "light", "dark", "blur", "texture",
+        "pattern", "material", "surface", "document", "art", "graphic", "screen",
+        "land", "water_body", "snow", "sand", "rock", "fog", "sun", "machine",
+    ]
+
     // MARK: Ciclo de vida
 
     func start() {
@@ -134,6 +158,7 @@ final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
             self.procQueue.async {
                 self.configureSession()
                 self.session.startRunning()
+                self.applyZoom(display: 1, ramp: false)
                 DispatchQueue.main.async {
                     self.running = true
                     self.magTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
@@ -149,11 +174,41 @@ final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
         session.beginConfiguration()
         session.sessionPreset = .hd1280x720
         session.inputs.forEach { session.removeInput($0) }
-        if let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
-           let input = try? AVCaptureDeviceInput(device: device),
+
+        // cámara virtual: permite pasar de ultra gran angular a tele con el zoom
+        let preferred: [AVCaptureDevice.DeviceType] = [
+            .builtInTripleCamera, .builtInDualWideCamera, .builtInDualCamera, .builtInWideAngleCamera,
+        ]
+        var chosen: AVCaptureDevice?
+        for type in preferred {
+            if let d = AVCaptureDevice.default(type, for: .video, position: .back) {
+                chosen = d; break
+            }
+        }
+        if let dev = chosen, let input = try? AVCaptureDeviceInput(device: dev),
            session.canAddInput(input) {
             session.addInput(input)
+            device = dev
+            let switchovers = dev.virtualDeviceSwitchOverVideoZoomFactors.map { CGFloat(truncating: $0) }
+            let hasUltraWide = dev.constituentDevices.contains { $0.deviceType == .builtInUltraWideCamera }
+            var options: [CGFloat] = []
+            if hasUltraWide, let first = switchovers.first {
+                wideFactor = first
+                options = [0.5, 1]
+                if switchovers.count > 1 {
+                    options.append((switchovers[1] / first * 10).rounded() / 10)  // tele real
+                }
+            } else {
+                wideFactor = 1
+                options = [1, 2]
+            }
+            let maxZ = min(10, dev.activeFormat.videoMaxZoomFactor / wideFactor)
+            DispatchQueue.main.async {
+                self.lensOptions = options
+                self.maxDisplayZoom = maxZ
+            }
         }
+
         if !session.outputs.contains(output) {
             output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
             output.alwaysDiscardsLateVideoFrames = true
@@ -166,10 +221,33 @@ final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
         session.commitConfiguration()
     }
 
+    // MARK: Zoom
+
+    /// display: zoom "de usuario" (0.5x, 1x, 2x…). ramp: transición suave.
+    func setZoom(display: CGFloat, ramp: Bool) {
+        procQueue.async { self.applyZoom(display: display, ramp: ramp) }
+    }
+
+    /// Solo en procQueue.
+    private func applyZoom(display: CGFloat, ramp: Bool) {
+        guard let dev = device else { return }
+        let clampedDisplay = max(0.5, min(maxDisplayZoom, display))
+        let factor = max(1, min(dev.activeFormat.videoMaxZoomFactor, clampedDisplay * wideFactor))
+        do {
+            try dev.lockForConfiguration()
+            if ramp {
+                dev.ramp(toVideoZoomFactor: factor, withRate: 8)
+            } else {
+                dev.videoZoomFactor = factor
+            }
+            dev.unlockForConfiguration()
+            let shown = factor / wideFactor
+            DispatchQueue.main.async { self.displayZoom = shown }
+        } catch {}
+    }
+
     // MARK: Fijar / soltar objetivo
 
-    /// Fija lo que esté en ese punto del buffer: el track de movimiento más
-    /// cercano, o —si no hay— un parche fijo (Vision puede seguir lo que sea).
     func lockAt(bufferPoint p: CGPoint) {
         procQueue.async {
             var best: Track?; var bd = CGFloat.greatestFiniteMagnitude
@@ -178,9 +256,9 @@ final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
                 if dd < bd { bd = dd; best = t }
             }
             if let t = best, bd < 180 * 180 {
-                self.seedLock(x: t.x, y: t.y, w: t.w, h: t.h, source: "TAP LOCK")
+                self.seedLock(x: t.x, y: t.y, w: t.w, h: t.h, label: t.label, source: "TAP LOCK")
             } else {
-                self.seedLock(x: p.x, y: p.y, w: 150, h: 150, source: "TAP LOCK")
+                self.seedLock(x: p.x, y: p.y, w: 150, h: 150, label: nil, source: "TAP LOCK")
             }
         }
     }
@@ -196,7 +274,7 @@ final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
     }
 
     /// Solo en procQueue.
-    private func seedLock(x: CGFloat, y: CGFloat, w: CGFloat, h: CGFloat, source: String) {
+    private func seedLock(x: CGFloat, y: CGFloat, w: CGFloat, h: CGFloat, label: String?, source: String) {
         let bw = max(bufW, 1), bh = max(bufH, 1)
         let nw = min(0.4, max(0.07, w * 1.4 / bw))
         let nh = min(0.4, max(0.07, h * 1.4 / bh))
@@ -205,14 +283,15 @@ final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
         rect.origin.y = max(0, min(1 - nh, rect.origin.y))
         lockObservation = VNDetectedObjectObservation(boundingBox: rect)
         seqHandler = VNSequenceRequestHandler()
+        lockLabel = label
         lockMiss = 0
         lockFrames = 0
         lockConf = 1
-        setStatus("\(source) X\(Int(x)) Y\(Int(y))")
-        log("\(source) X\(Int(x)) Y\(Int(y))", highlight: true)
+        setStatus("\(source)\(label.map { " · \($0)" } ?? "") X\(Int(x)) Y\(Int(y))")
+        log("\(source)\(label.map { " · \($0)" } ?? "") X\(Int(x)) Y\(Int(y))", highlight: true)
     }
 
-    /// Etiquetado neuronal del objetivo (Vision, en el dispositivo).
+    /// Etiquetado neuronal del objetivo bajo demanda.
     func snapClassify() {
         bufferLock.lock()
         let buffer = latestBuffer
@@ -225,7 +304,9 @@ final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
             let request = VNClassifyImageRequest()
             let handler = VNImageRequestHandler(cvPixelBuffer: buffer, options: [:])
             guard (try? handler.perform([request])) != nil,
-                  let top = request.results?.first(where: { $0.confidence > 0.3 }) else {
+                  let top = request.results?.first(where: {
+                      $0.confidence > 0.3 && !self.labelBlocklist.contains($0.identifier)
+                  }) else {
                 self.procQueue.async { self.setStatus("SNAP: UNKNOWN") }
                 return
             }
@@ -239,7 +320,7 @@ final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
         }
     }
 
-    // MARK: Recortes MAG (sin parpadeo: conservan la última imagen)
+    // MARK: Recortes MAG
 
     private func refreshMagImages() {
         var result = magImages
@@ -296,13 +377,94 @@ final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
             fpsValue = fpsCounter; fpsCounter = 0; fpsStamp = now
         }
 
-        trackLockWithVision(pb)      // cada cuadro: rastreo suave del objetivo
+        trackLockWithVision(pb)
 
         frameToggle.toggle()
         if frameToggle {
+            visionTick += 1
             let (boxes, specks) = detectMotion(in: pb)
             updateTracks(with: boxes)
+            if visionTick % 4 == 0 { detectHumans(pb) }        // ~4 veces/s
+            if visionTick % 8 == 0 { classifyTracks(pb) }      // ~2 veces/s
             publishHUD(speckles: specks)
+        }
+    }
+
+    // MARK: Reconocimiento de personas (continuo)
+
+    private func detectHumans(_ pb: CVPixelBuffer) {
+        let request = VNDetectHumanRectanglesRequest()
+        request.upperBodyOnly = false
+        let handler = VNImageRequestHandler(cvPixelBuffer: pb, options: [:])
+        guard (try? handler.perform([request])) != nil, let results = request.results else { return }
+        let now = CACurrentMediaTime()
+        for o in results where o.confidence > 0.3 {
+            let b = o.boundingBox
+            let x = b.midX * bufW, y = (1 - b.midY) * bufH
+            let w = b.width * bufW, h = b.height * bufH
+            var best: Track?; var bd = CGFloat.greatestFiniteMagnitude
+            for t in tracks {
+                let dd = (t.x - x) * (t.x - x) + (t.y - y) * (t.y - y)
+                if dd < bd { bd = dd; best = t }
+            }
+            if let t = best, bd < 220 * 220 {
+                // refresca el track con la detección (aunque no se mueva)
+                t.x = t.x * 0.4 + x * 0.6
+                t.y = t.y * 0.4 + y * 0.6
+                t.w = w; t.h = h
+                t.miss = 0
+                t.age = max(t.age, 10)
+                t.label = "PERSON"
+                t.labelConf = Double(o.confidence)
+                t.labelAt = now
+            } else if tracks.count < Int(maxPoints) {
+                let t = Track(id: nextId, x: x, y: y, w: w, h: h, area: Int(w * h / 100))
+                t.age = 10
+                t.label = "PERSON"
+                t.labelConf = Double(o.confidence)
+                t.labelAt = now
+                tracks.append(t)
+                nextId += 1
+                log("PERSON DETECTED X\(Int(x)) Y\(Int(y))", highlight: true)
+            }
+        }
+    }
+
+    // MARK: Clasificación de objetos (carros, animales, etc.)
+
+    private func classifyTracks(_ pb: CVPixelBuffer) {
+        let now = CACurrentMediaTime()
+        let candidates = tracks
+            .filter { $0.age >= 10 && $0.label != "PERSON" && (now - $0.labelAt) > 4 }
+            .sorted { $0.area > $1.area }
+            .prefix(2)
+        guard !candidates.isEmpty else { return }
+        let full = CIImage(cvPixelBuffer: pb)
+        for t in candidates {
+            var cw = max(180, max(t.w, t.h) * 1.6)
+            var ch = cw
+            cw = min(cw, bufW); ch = min(ch, bufH)
+            var ox = t.x - cw / 2, oy = t.y - ch / 2
+            ox = max(0, min(bufW - cw, ox))
+            oy = max(0, min(bufH - ch, oy))
+            let ciRect = CGRect(x: ox, y: bufH - oy - ch, width: cw, height: ch)
+            let crop = full.cropped(to: ciRect)
+            let request = VNClassifyImageRequest()
+            let handler = VNImageRequestHandler(ciImage: crop, options: [:])
+            guard (try? handler.perform([request])) != nil,
+                  let top = request.results?.first(where: {
+                      $0.confidence > 0.3 && !labelBlocklist.contains($0.identifier)
+                  }) else {
+                t.labelAt = now      // no insistir de inmediato
+                continue
+            }
+            let wasNil = t.label == nil
+            t.label = top.identifier.uppercased()
+            t.labelConf = Double(top.confidence)
+            t.labelAt = now
+            if wasNil {
+                log("TAG \(t.label ?? "") \(String(format: "%.2f", t.labelConf)) · TRK-\(Self.pad(t.id))")
+            }
         }
     }
 
@@ -311,7 +473,6 @@ final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
     private func trackLockWithVision(_ pb: CVPixelBuffer) {
         guard let obs = lockObservation else { return }
         lockFrames += 1
-        // reinicio periódico del handler (evita crecimiento de memoria)
         if lockFrames % 240 == 0 {
             seqHandler = VNSequenceRequestHandler()
         }
@@ -386,7 +547,6 @@ final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
             return ([], [])
         }
 
-        // diferencia contra fondo adaptativo + actualización del fondo
         let thr = Float(ufoMode ? max(6, sensitivity * 0.55) : sensitivity)
         var cells = [Int](repeating: 0, count: cw * chh)
         var total = 0
@@ -400,7 +560,6 @@ final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
         }
         motionTotal += total
 
-        // suavizado temporal por celda: mata el ruido de un solo cuadro
         let minCell = ufoMode ? 1 : 2
         var active = [Bool](repeating: false, count: cw * chh)
         for i in 0..<(cw * chh) {
@@ -456,7 +615,7 @@ final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
         return (boxes, specks)
     }
 
-    // MARK: Asociación de tracks (propuestas de movimiento)
+    // MARK: Asociación de tracks
 
     private func updateTracks(with boxes: [(x: CGFloat, y: CGFloat, w: CGFloat, h: CGFloat, area: Int)]) {
         for t in tracks { t.x += t.vx; t.y += t.vy; t.matched = false }
@@ -474,7 +633,7 @@ final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
                 t.vx = (t.vx + g * rx) * 0.9
                 t.vy = (t.vy + g * ry) * 0.9
                 t.area = b.area
-                t.w = t.w * 0.7 + b.w * 0.3   // tamaño suavizado, sin saltos
+                t.w = t.w * 0.7 + b.w * 0.3
                 t.h = t.h * 0.7 + b.h * 0.3
                 t.age += 1; t.miss = 0; t.matched = true
             } else if tracks.count < Int(maxPoints) {
@@ -487,22 +646,24 @@ final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
         while idx >= 0 {
             let t = tracks[idx]
             if !t.matched { t.miss += 1 }
-            if t.miss > 25 || t.x < -100 || t.x > bufW + 100 || t.y < -100 || t.y > bufH + 100 {
+            // las personas detectadas viven más (el detector las refresca)
+            let limit = t.label == "PERSON" ? 60 : 25
+            if t.miss > limit || t.x < -100 || t.x > bufW + 100 || t.y < -100 || t.y > bufH + 100 {
                 if t.age > 40 { log("TRK-\(Self.pad(t.id)) end · life \(t.age)f") }
                 tracks.remove(at: idx)
             }
             idx -= 1
         }
 
-        // autolock: siembra el rastreador Vision con el track más estable
         if autolock && lockObservation == nil {
             var best: Track?; var score = -1
             for t in tracks where t.age >= 12 {
-                let s = t.area * min(t.age, 60)
+                var s = t.area * min(t.age, 60)
+                if t.label != nil { s *= 3 }    // prioriza objetivos identificados
                 if s > score { score = s; best = t }
             }
             if let b = best {
-                seedLock(x: b.x, y: b.y, w: b.w, h: b.h, source: "AUTOLOCK")
+                seedLock(x: b.x, y: b.y, w: b.w, h: b.h, label: b.label, source: "AUTOLOCK")
             }
         }
     }
@@ -515,7 +676,8 @@ final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
                 TrackBox(id: $0.id,
                          pos: CGPoint(x: $0.x, y: $0.y),
                          size: CGSize(width: max(56, $0.w), height: max(56, $0.h)),
-                         area: $0.area, age: $0.age)
+                         area: $0.area, age: $0.age,
+                         label: $0.label, labelConf: $0.labelConf)
             }
         state.speckles = showSpeckle ? speckles : []
         state.lock = currentLockInfo()
@@ -523,7 +685,7 @@ final class CameraEngine: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
         if now < statusUntil {
             state.status = statusText
         } else if let lock = state.lock {
-            state.status = "LOCK X\(Int(lock.pos.x)) Y\(Int(lock.pos.y)) C\(String(format: "%.2f", lock.conf))"
+            state.status = "LOCK\(lock.label.map { " \($0)" } ?? "") C\(String(format: "%.2f", lock.conf))"
         } else {
             state.status = autolock ? "SCANNING" : "TAP TO LOCK"
         }
