@@ -10,6 +10,7 @@
 //
 
 import AVFoundation
+import AVKit
 import SwiftUI
 
 // MARK: - Tema
